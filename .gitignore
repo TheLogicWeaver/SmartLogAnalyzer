@@ -1,0 +1,25 @@
+# Binaries and build outputs
+bin/
+obj/
+*.dll
+*.exe
+*.pdb
+
+# Database files
+logs.db
+logs.db-*
+
+# NuGet packages
+packages/
+
+# Visual Studio
+.vs/
+*.suo
+*.user
+
+# JetBrains Rider
+.idea/
+
+# OS generated files
+.DS_Store
+Thumbs.db
