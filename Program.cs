@@ -32,9 +32,9 @@ app.MapGet("/insights/summary", async (LogInsightsService service) =>
 })
 .DisableAntiforgery();
 
-app.MapGet("/insights/top-messages-by-level", async (LogInsightsService service, string level) =>
+app.MapGet("/insights/top-messages-by-level", async (LogInsightsService service, string level, int top) =>
 {
-    return await service.GetTopMessagesByLevelAsync(level);
+    return await service.GetTopMessagesByLevelAsync(level, top);
 })
 .DisableAntiforgery();
 
