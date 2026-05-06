@@ -1,0 +1,24 @@
+Microsoft Visual Studio Solution File, Format Version 12.00
+# Visual Studio Version 17
+VisualStudioVersion = 17.5.2.0
+MinimumVisualStudioVersion = 10.0.40219.1
+Project("{FAE04EC0-301F-11D3-BF4B-00C04F79EFBC}") = "SmartLogAnalyzer", "SmartLogAnalyzer.csproj", "{F6FC6D3A-C63F-BF65-CC36-37C2BA4AF79A}"
+EndProject
+Global
+	GlobalSection(SolutionConfigurationPlatforms) = preSolution
+		Debug|Any CPU = Debug|Any CPU
+		Release|Any CPU = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(ProjectConfigurationPlatforms) = postSolution
+		{F6FC6D3A-C63F-BF65-CC36-37C2BA4AF79A}.Debug|Any CPU.ActiveCfg = Debug|Any CPU
+		{F6FC6D3A-C63F-BF65-CC36-37C2BA4AF79A}.Debug|Any CPU.Build.0 = Debug|Any CPU
+		{F6FC6D3A-C63F-BF65-CC36-37C2BA4AF79A}.Release|Any CPU.ActiveCfg = Release|Any CPU
+		{F6FC6D3A-C63F-BF65-CC36-37C2BA4AF79A}.Release|Any CPU.Build.0 = Release|Any CPU
+	EndGlobalSection
+	GlobalSection(SolutionProperties) = preSolution
+		HideSolutionNode = FALSE
+	EndGlobalSection
+	GlobalSection(ExtensibilityGlobals) = postSolution
+		SolutionGuid = {3DD5D375-4F12-4B35-8A8F-6AF257FB4331}
+	EndGlobalSection
+EndGlobal
