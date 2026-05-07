@@ -20,7 +20,7 @@ public class LogIngestionService
         const int batchSize = 500;
         int totalInserted = 0;
 
-        string line;
+        string? line;
 
         while ((line = await reader.ReadLineAsync()) != null)
         {
@@ -63,8 +63,8 @@ public class LogIngestionService
             Timestamp = entry.Timestamp,
             Level = entry.Level,
             Message = entry.Message,
-            DeviceId = entry.DeviceId,
-            Source = entry.Source,
+            DeviceId = entry.DeviceId ?? string.Empty,
+            Source = entry.Source ?? string.Empty,
             EventId = entry.EventId,
             RawLine = rawLine,
             Metadata = entry.Metadata.Select(m => new LogMetadataEntity

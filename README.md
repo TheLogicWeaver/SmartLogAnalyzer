@@ -4,28 +4,58 @@ A .NET 8 ASP.NET Core Web API application for analyzing and processing logs from
 
 ## Features
 
-- **Log Ingestion**: Handles log data from various sources.
-- **Flexible Parsing**: Supports multiple log formats through a factory pattern (e.g., IoT Gateway logs).
+- **Log Ingestion**: Handles log data from uploaded files and parses them into structured records.
+- **Flexible Parsing**: Supports multiple log formats through a parser factory pattern with extension points.
+- **Anomaly Detection**: Detects spike-based anomalies and interprets them into readable issue summaries.
+- **Insight Generation**: Provides analytics such as top messages, log counts, and normalized issue grouping.
 - **Database Storage**: Uses Entity Framework Core with SQLite for efficient data persistence.
-- **Insights Generation**: Provides analytics and insights on log data.
-- **RESTful API**: Exposes endpoints for log management and querying.
+- **RESTful API**: Exposes endpoints for log ingestion, analytics, and anomaly insights.
 - **Migration Support**: Includes database migrations for schema management.
 
 ## Architecture
 
+### Folder Structure
+- `Data/`
+  - `AppDbContext.cs`
+  - `LogEntryEntity.cs`
+  - `LogMetadataEntity.cs`
+  - `Migrations/`
+- `Models/`
+  - `LogEntry.cs`
+  - `LogAnomaly.cs`
+  - `LogIssueGroup.cs`
+  - `AnomalyDetectionResult.cs`
+- `Parsers/`
+  - `ILogParser.cs`
+  - `IotGatewayLogParser.cs`
+  - `LogParserFactory.cs`
+- `Services/`
+  - `LogIngestionService.cs`
+  - `LogProcessingService.cs`
+  - `LogInsightsService.cs`
+  - `LogAnomalyAnalysisService.cs`
+- `Detection/`
+  - `IAnomalyDetector.cs`
+  - `SpikeAnomalyDetector.cs`
+  - `AnomalyInterpreter.cs`
+- `Utilities/`
+  - `MessageNormalizer.cs`
+
 ### Core Components
-- **Entities**: `LogEntryEntity` and `LogMetadataEntity` for data modeling.
+- **Entities**: `LogEntryEntity` and `LogMetadataEntity` for EF Core persistence.
+- **Domain Models**: `LogEntry`, `LogAnomaly`, `LogIssueGroup`, and `AnomalyDetectionResult` capture parsed data and insight results.
 - **Services**:
-  - `LogIngestionService`: Handles incoming log data.
-  - `LogProcessingService`: Processes and parses logs.
-  - `LogInsightsService`: Generates insights and analytics.
-- **Parsers**: `ILogParser` interface with implementations like `IotGatewayLogParser`.
-- **Factory**: `LogParserFactory` for selecting appropriate parsers.
-- **Database Context**: `AppDbContext` with EF Core configuration.
+  - `LogIngestionService`: Reads uploaded log files, parses lines, and stores entries in the database.
+  - `LogProcessingService`: Routes raw log lines to the correct parser.
+  - `LogInsightsService`: Generates analytics, smart grouping, and query results.
+  - `LogAnomalyAnalysisService`: Runs anomaly detection and interprets the output.
+- **Parsers**: `ILogParser` and `IotGatewayLogParser` support log format detection and parsing.
+- **Detection**: `SpikeAnomalyDetector` implements `IAnomalyDetector` and identifies spikes over a historical baseline, while `AnomalyInterpreter` converts detection results into user-facing anomalies.
+- **Utilities**: `MessageNormalizer` normalizes log messages to reduce noise in grouping and anomaly detection.
 
 ### Database Schema
-- **LogEntryEntity**: Stores main log entries (ID, Timestamp, Level, Message, DeviceId, Source, EventId, RawLine).
-- **LogMetadataEntity**: Stores additional metadata for each log entry (Key-Value pairs).
+- **LogEntryEntity**: Stores main log entries with timestamp, device, source, event ID, level, message, raw line, and metadata.
+- **LogMetadataEntity**: Stores additional metadata key/value pairs for each log entry.
 
 ## Prerequisites
 
@@ -64,9 +94,11 @@ The API will be available at `https://localhost:5001` (or as configured in `laun
 The application exposes RESTful endpoints for log management. Refer to `SmartLogAnalyzer.http` for sample requests.
 
 Example endpoints:
-- POST `/api/logs` - Ingest new log entries
-- GET `/api/logs` - Retrieve log entries with filtering
-- GET `/api/insights` - Get log analytics and insights
+- POST `/upload-log` - Ingest new log entries from an uploaded file.
+- GET `/insights/summary` - Retrieve summary counts.
+- GET `/insights/top-messages-by-level` - Get top messages for a log level.
+- GET `/insights/smart-groups` - Receive normalized issue grouping.
+- GET `/insights/anomalies` - View detected anomaly patterns.
 
 ### Configuration
 
