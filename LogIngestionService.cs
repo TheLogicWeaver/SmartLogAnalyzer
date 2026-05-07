@@ -1,3 +1,4 @@
+
 public class LogIngestionService
 {
     private readonly LogProcessingService _processingService;
