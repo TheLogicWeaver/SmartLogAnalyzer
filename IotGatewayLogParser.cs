@@ -28,17 +28,4 @@ public class IotGatewayLogParser : ILogParser
             Message = match.Groups["message"].Value
         };
     }
-
-        private void ExtractMetadata(LogEntry entry)
-    {
-        if (entry.Message.Contains("Used buffer size"))
-        {
-            var match = Regex.Match(entry.Message, @"Used buffer size: ""(?<size>[\d\.]+) MB""");
-
-            if (match.Success)
-            {
-                entry.Metadata["UsedBufferMB"] = match.Groups["size"].Value;
-            }
-        }
-    }
 }
