@@ -34,7 +34,7 @@ public class LogInsightsService
     public async Task<List<object>> GetTopMessagesAsync(
         LogQueryFilter filter)
     {
-        var query = ApplyFilters(_db.Logs, filter);
+        var query = filter.ApplyTo(_db.Logs);
 
         return await query
             .GroupBy(x => x.Message)
@@ -52,7 +52,7 @@ public class LogInsightsService
     public async Task<List<object>> GetLogsAsync(
         LogQueryFilter filter)
     {
-        var query = ApplyFilters(_db.Logs, filter);
+        var query = filter.ApplyTo(_db.Logs);
 
         return await query
             .OrderByDescending(x => x.Timestamp)
@@ -64,7 +64,7 @@ public class LogInsightsService
     public async Task<List<LogIssueGroup>> GetSmartGroupsAsync(
         LogQueryFilter filter)
     {
-        var query = ApplyFilters(_db.Logs, filter);
+        var query = filter.ApplyTo(_db.Logs);
 
         var logs = await query.ToListAsync();
 
@@ -84,34 +84,4 @@ public class LogInsightsService
             .ToList();
     }
 
-    private IQueryable<LogEntryEntity> ApplyFilters(
-        IQueryable<LogEntryEntity> query,
-        LogQueryFilter filter)
-    {
-        if (!string.IsNullOrWhiteSpace(filter.Level))
-        {
-            query = query.Where(x =>
-                x.Level.ToLower() == filter.Level.ToLower()); 
-        }
-
-        if (!string.IsNullOrWhiteSpace(filter.DeviceId))
-        {
-            query = query.Where(x =>
-                x.DeviceId == filter.DeviceId);
-        }
-
-        if (filter.StartTime.HasValue)
-        {
-            query = query.Where(x =>
-                x.Timestamp >= filter.StartTime.Value);
-        }
-
-        if (filter.EndTime.HasValue)
-        {
-            query = query.Where(x =>
-                x.Timestamp <= filter.EndTime.Value);
-        }
-
-        return query;
-    }
 }
