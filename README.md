@@ -103,7 +103,8 @@ Example endpoints:
 - GET `/api/insights/logs` - Retrieve parsed log entries.
 - GET `/api/insights/smart-groups` - Receive normalized issue grouping.
 - GET `/insights/anomalies` - View detected anomaly patterns.
-- GET `/api/insights/connection-incidents` - Inspect connection outages. Optional query parameters: `deviceId`, `startTime`, `endTime`, and `limit`. Each incident includes the 40 preceding parsed log lines.
+- GET `/api/insights/connection-incidents` - Return concise, AI-friendly connection-incident summaries. Optional query parameters: `deviceId`, `startTime`, `endTime`, and `limit`.
+- GET `/api/insights/connection-incidents/{incidentKey}/evidence` - Return the detailed event context, preceding 40 log lines, errors, and heartbeat executions for one incident.
 - GET `/api/insights/heartbeats` - Retrieve parsed heartbeat log entries with the same filters.
 
 Connection incidents are detected from IoT Hub cloud-connectivity signals, including `not connected to cloud`, connection status changes, and failed control-message delivery. Recovery is confirmed by a connected status or successful IoT Hub delivery. When the gateway temporarily labels its log lines as `DeviceNotProvisioned`, incident analysis associates those lines with the real serial number referenced in the same log timeline; it never returns `DeviceNotProvisioned` as a device incident. The heartbeat endpoint groups each `901` start through `903` completion and returns the events and errors produced in that execution. An open incident is measured through the last available log timestamp, so an uploaded historical file is never incorrectly treated as disconnected until the present time.

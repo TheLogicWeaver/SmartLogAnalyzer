@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using SmartLogAnalyzer.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
@@ -77,7 +78,16 @@ app.MapGet("/api/insights/connection-incidents", async (
     [AsParameters] LogQueryFilter filter,
     ConnectionAnalysisService service) =>
 {
-    return await service.GetIncidentsAsync(filter);
+    return await service.GetIncidentSummariesAsync(filter);
+})
+.DisableAntiforgery();
+
+app.MapGet("/api/insights/connection-incidents/{incidentKey}/evidence", async (
+    string incidentKey,
+    ConnectionAnalysisService service) =>
+{
+    var incident = await service.GetIncidentEvidenceAsync(incidentKey);
+    return incident is null ? Results.NotFound() : Results.Ok(incident);
 })
 .DisableAntiforgery();
 

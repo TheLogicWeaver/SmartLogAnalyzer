@@ -8,6 +8,8 @@ public class ConnectionIncident
     public bool IsOngoing { get; set; }
     public bool IsProlongedOver12Hours { get; set; }
     public bool IsProlongedOver24Hours { get; set; }
+    public ConnectionLogContext? DisconnectEvent { get; init; }
+    public ConnectionLogContext? RecoveryEvent { get; set; }
     public List<ConnectionLogContext> LogsBeforeDisconnection { get; init; } = [];
     public List<ConnectionLogContext> ErrorsBeforeDisconnection { get; init; } = [];
     public List<HeartbeatExecution> HeartbeatsDuringDisconnection { get; } = [];

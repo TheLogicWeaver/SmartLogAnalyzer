@@ -1,41 +1,44 @@
-public class LogQueryFilter
+namespace SmartLogAnalyzer.Models
 {
-    public string? Level { get; set; }
-
-    public string? DeviceId { get; set; }
-
-    public DateTime? StartTime { get; set; }
-
-    public DateTime? EndTime { get; set; }
-
-    public int Top { get; set; } = 10;
-
-    public int Limit { get; set; } = 100;
-
-    public IQueryable<LogEntryEntity> ApplyTo(IQueryable<LogEntryEntity> query)
+    public class LogQueryFilter
     {
-        query = ApplyNonDeviceFilters(query);
+        public string? Level { get; set; }
 
-        if (!string.IsNullOrWhiteSpace(DeviceId))
-            query = query.Where(log => log.DeviceId == DeviceId || log.DeviceId.Contains(DeviceId));
+        public string? DeviceId { get; set; }
 
-        return query;
-    }
+        public DateTime? StartTime { get; set; }
 
-    public IQueryable<LogEntryEntity> ApplyNonDeviceFilters(IQueryable<LogEntryEntity> query)
-    {
-        if (!string.IsNullOrWhiteSpace(Level))
+        public DateTime? EndTime { get; set; }
+
+        public int Top { get; set; } = 10;
+
+        public int Limit { get; set; } = 100;
+
+        public IQueryable<LogEntryEntity> ApplyTo(IQueryable<LogEntryEntity> query)
         {
-            query = query.Where(log =>
-                log.Level.ToLower() == Level.ToLower());
+            query = ApplyNonDeviceFilters(query);
+
+            if (!string.IsNullOrWhiteSpace(DeviceId))
+                query = query.Where(log => log.DeviceId == DeviceId || log.DeviceId.Contains(DeviceId));
+
+            return query;
         }
 
-        if (StartTime.HasValue)
-            query = query.Where(log => log.Timestamp >= StartTime.Value);
+        public IQueryable<LogEntryEntity> ApplyNonDeviceFilters(IQueryable<LogEntryEntity> query)
+        {
+            if (!string.IsNullOrWhiteSpace(Level))
+            {
+                query = query.Where(log =>
+                    log.Level.ToLower() == Level.ToLower());
+            }
 
-        if (EndTime.HasValue)
-            query = query.Where(log => log.Timestamp <= EndTime.Value);
+            if (StartTime.HasValue)
+                query = query.Where(log => log.Timestamp >= StartTime.Value);
 
-        return query;
+            if (EndTime.HasValue)
+                query = query.Where(log => log.Timestamp <= EndTime.Value);
+
+            return query;
+        }
     }
 }
