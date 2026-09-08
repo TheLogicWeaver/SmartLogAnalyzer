@@ -5,7 +5,9 @@ public class LogInsightsService
     private readonly AppDbContext _db;
     private readonly MessageNormalizer _normalizer;
 
-    public LogInsightsService(AppDbContext db, MessageNormalizer normalizer)
+    public LogInsightsService(
+        AppDbContext db,
+        MessageNormalizer normalizer)
     {
         _db = db;
         _normalizer = normalizer;
@@ -15,8 +17,11 @@ public class LogInsightsService
     {
         var total = await _db.Logs.CountAsync();
 
-        var errors = await _db.Logs.CountAsync(x => x.Level == "Error");
-        var warnings = await _db.Logs.CountAsync(x => x.Level == "Warning");
+        var errors = await _db.Logs
+            .CountAsync(x => x.Level == "Error");
+
+        var warnings = await _db.Logs
+            .CountAsync(x => x.Level == "Warning");
 
         return new
         {
@@ -26,10 +31,12 @@ public class LogInsightsService
         };
     }
 
-    public async Task<List<object>> GetTopMessagesByLevelAsync(string level, int top = 10)
+    public async Task<List<object>> GetTopMessagesAsync(
+        LogQueryFilter filter)
     {
-        return await _db.Logs
-            .Where(x => x.Level == level)
+        var query = ApplyFilters(_db.Logs, filter);
+
+        return await query
             .GroupBy(x => x.Message)
             .Select(g => new
             {
@@ -37,92 +44,74 @@ public class LogInsightsService
                 Count = g.Count()
             })
             .OrderByDescending(x => x.Count)
-            .Take(top)
+            .Take(filter.Top)
             .Cast<object>()
             .ToListAsync();
     }
 
-    public async Task<List<object>> GetTopMessagesByLevelAndDeviceIdAsync(string level, string deviceId, int top = 10)
+    public async Task<List<object>> GetLogsAsync(
+        LogQueryFilter filter)
     {
-        return await _db.Logs
-            .Where(x => x.Level == level && x.DeviceId == deviceId)
-            .GroupBy(x => x.Message)
-            .Select(g => new
-            {
-                Message = g.Key,
-                Count = g.Count()
-            })
-            .OrderByDescending(x => x.Count)
-            .Take(top)
-            .Cast<object>()
-            .ToListAsync();
-    }
+        var query = ApplyFilters(_db.Logs, filter);
 
-    public async Task<List<object>> GetLogsByLevelAsync(string level)
-    {
-        return await _db.Logs
-            .Where(x => x.Level == level)
+        return await query
             .OrderByDescending(x => x.Timestamp)
-            .Take(100)
+            .Take(filter.Limit)
             .Cast<object>()
             .ToListAsync();
-    }
-
-    public async Task<List<object>> GetLogsByLevelDeviceIdAsync(string level, string deviceId)
-    {
-        return await _db.Logs
-        .Where(x => x.Level == level && x.DeviceId == deviceId)
-        .OrderByDescending(x => x.Timestamp)
-        .Take(1000)
-        .Cast<object>()
-        .ToListAsync();
     }
 
     public async Task<List<LogIssueGroup>> GetSmartGroupsAsync(
-        string level,
-        int top)
+        LogQueryFilter filter)
     {
-        var logs = await _db.Logs
-            .Where(x => x.Level == level)
-            .ToListAsync();
+        var query = ApplyFilters(_db.Logs, filter);
 
-        var grouped = logs
-            .GroupBy(x => _normalizer.Normalize(x.Message))
+        var logs = await query.ToListAsync();
+
+        return logs
+            .GroupBy(x =>
+                _normalizer.Normalize(x.Message))
             .Select(g => new LogIssueGroup
             {
                 Pattern = g.Key,
                 Count = g.Count(),
-                Level = level,
+                Level = filter.Level ?? "Unknown",
                 FirstOccurrence = g.Min(x => x.Timestamp),
                 LastOccurrence = g.Max(x => x.Timestamp)
             })
             .OrderByDescending(x => x.Count)
-            .Take(top)
+            .Take(filter.Top)
             .ToList();
-
-        return grouped;
     }
 
-    public async Task<List<LogIssueGroup>> GetSmartGroupsByDeviceId(string level, int top, string deviceId)
+    private IQueryable<LogEntryEntity> ApplyFilters(
+        IQueryable<LogEntryEntity> query,
+        LogQueryFilter filter)
     {
-        var logs = await _db.Logs
-            .Where(x => x.Level == level && x.DeviceId == deviceId)
-            .ToListAsync();
+        if (!string.IsNullOrWhiteSpace(filter.Level))
+        {
+            query = query.Where(x =>
+                x.Level.ToLower() == filter.Level.ToLower()); 
+        }
 
-        var grouped = logs
-            .GroupBy(x => _normalizer.Normalize(x.Message))
-            .Select(g => new LogIssueGroup
-            {
-                Pattern = g.Key,
-                Count = g.Count(),
-                Level = level,
-                FirstOccurrence = g.Min(x => x.Timestamp),
-                LastOccurrence = g.Max(x => x.Timestamp)
-            })
-            .OrderByDescending(x => x.Count)
-            .Take(top)
-            .ToList();
+        if (!string.IsNullOrWhiteSpace(filter.DeviceId))
+        {
+            query = query.Where(x =>
+                x.DeviceId == filter.DeviceId);
+        }
 
-        return grouped;
+        if (filter.StartTime.HasValue)
+        {
+            query = query.Where(x =>
+                x.Timestamp >= filter.StartTime.Value);
+        }
+
+        if (filter.EndTime.HasValue)
+        {
+            query = query.Where(x =>
+                x.Timestamp <= filter.EndTime.Value);
+        }
+
+        return query;
     }
 }
