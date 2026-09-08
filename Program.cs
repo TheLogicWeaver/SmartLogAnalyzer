@@ -13,6 +13,7 @@ builder.Services.AddSingleton<MessageNormalizer>();
 builder.Services.AddScoped<IAnomalyDetector, SpikeAnomalyDetector>();
 builder.Services.AddScoped<AnomalyInterpreter>();
 builder.Services.AddScoped<LogAnomalyAnalysisService>();
+builder.Services.AddScoped<ConnectionAnalysisService>();
 
 var app = builder.Build();
 app.UseSwagger();
@@ -69,6 +70,22 @@ app.MapGet("/insights/anomalies", async (
     LogAnomalyAnalysisService service) =>
 {
     return await service.AnalyzeAsync(level);
+})
+.DisableAntiforgery();
+
+app.MapGet("/api/insights/connection-incidents", async (
+    [AsParameters] LogQueryFilter filter,
+    ConnectionAnalysisService service) =>
+{
+    return await service.GetIncidentsAsync(filter);
+})
+.DisableAntiforgery();
+
+app.MapGet("/api/insights/heartbeats", async (
+    [AsParameters] LogQueryFilter filter,
+    ConnectionAnalysisService service) =>
+{
+    return await service.GetHeartbeatsAsync(filter);
 })
 .DisableAntiforgery();
 

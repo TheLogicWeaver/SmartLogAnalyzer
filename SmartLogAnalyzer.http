@@ -1,6 +1,10 @@
 @SmartLogAnalyzer_HostAddress = http://localhost:5173
 
-GET {{SmartLogAnalyzer_HostAddress}}/weatherforecast/
+GET {{SmartLogAnalyzer_HostAddress}}/api/insights/connection-incidents
+Accept: application/json
+
+###
+GET {{SmartLogAnalyzer_HostAddress}}/api/insights/heartbeats
 Accept: application/json
 
 ###

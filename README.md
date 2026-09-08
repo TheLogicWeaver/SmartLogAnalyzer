@@ -8,6 +8,7 @@ A .NET 8 ASP.NET Core Web API application for analyzing and processing logs from
 - **Flexible Parsing**: Supports multiple log formats through a parser factory pattern with extension points.
 - **Anomaly Detection**: Detects spike-based anomalies and interprets them into readable issue summaries.
 - **Insight Generation**: Provides analytics such as top messages, log counts, and normalized issue grouping.
+- **Connection Timeline Analysis**: Detects disconnect/reconnect windows, marks outages over 12 or 24 hours, preserves preceding error context, and exposes heartbeat activity.
 - **Database Storage**: Uses Entity Framework Core with SQLite for efficient data persistence.
 - **RESTful API**: Exposes endpoints for log ingestion, analytics, and anomaly insights.
 - **Migration Support**: Includes database migrations for schema management.
@@ -25,6 +26,7 @@ A .NET 8 ASP.NET Core Web API application for analyzing and processing logs from
   - `LogAnomaly.cs`
   - `LogIssueGroup.cs`
   - `AnomalyDetectionResult.cs`
+  - `ConnectionIncident.cs`
 - `Parsers/`
   - `ILogParser.cs`
   - `IotGatewayLogParser.cs`
@@ -34,6 +36,7 @@ A .NET 8 ASP.NET Core Web API application for analyzing and processing logs from
   - `LogProcessingService.cs`
   - `LogInsightsService.cs`
   - `LogAnomalyAnalysisService.cs`
+  - `ConnectionAnalysisService.cs`
 - `Detection/`
   - `IAnomalyDetector.cs`
   - `SpikeAnomalyDetector.cs`
@@ -95,10 +98,15 @@ The application exposes RESTful endpoints for log management. Refer to `SmartLog
 
 Example endpoints:
 - POST `/upload-log` - Ingest new log entries from an uploaded file.
-- GET `/insights/summary` - Retrieve summary counts.
-- GET `/insights/top-messages-by-level` - Get top messages for a log level.
-- GET `/insights/smart-groups` - Receive normalized issue grouping.
+- GET `/api/insights/summary` - Retrieve summary counts.
+- GET `/api/insights/top-messages` - Get the most frequent messages, optionally filtered by level.
+- GET `/api/insights/logs` - Retrieve parsed log entries.
+- GET `/api/insights/smart-groups` - Receive normalized issue grouping.
 - GET `/insights/anomalies` - View detected anomaly patterns.
+- GET `/api/insights/connection-incidents` - Inspect connection outages. Optional query parameters: `deviceId`, `startTime`, `endTime`, and `limit`. Each incident includes the 40 preceding parsed log lines.
+- GET `/api/insights/heartbeats` - Retrieve parsed heartbeat log entries with the same filters.
+
+Connection incidents are detected from IoT Hub cloud-connectivity signals, including `not connected to cloud`, connection status changes, and failed control-message delivery. Recovery is confirmed by a connected status or successful IoT Hub delivery. When the gateway temporarily labels its log lines as `DeviceNotProvisioned`, incident analysis associates those lines with the real serial number referenced in the same log timeline; it never returns `DeviceNotProvisioned` as a device incident. The heartbeat endpoint groups each `901` start through `903` completion and returns the events and errors produced in that execution. An open incident is measured through the last available log timestamp, so an uploaded historical file is never incorrectly treated as disconnected until the present time.
 
 ### Configuration
 

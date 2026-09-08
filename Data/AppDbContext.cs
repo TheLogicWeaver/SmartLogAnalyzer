@@ -28,6 +28,7 @@ public class AppDbContext : DbContext
         log.HasIndex(x => x.Timestamp);
         log.HasIndex(x => x.Level);
         log.HasIndex(x => x.DeviceId);
+        log.HasIndex(x => new { x.DeviceId, x.Timestamp });
 
         // Relationship
         log.HasMany(x => x.Metadata)
