@@ -1,12 +1,19 @@
 using Microsoft.EntityFrameworkCore;
+using SmartLogAnalyzer.Models;
 
 public class ConnectionAnalysisService
 {
     private const int ContextLineCount = 40;
+    private const int MaxIncidentCount = 500;
     private const string UnprovisionedDeviceId = "DeviceNotProvisioned";
     private readonly AppDbContext _db;
+    private readonly MessageNormalizer _normalizer;
 
-    public ConnectionAnalysisService(AppDbContext db) => _db = db;
+    public ConnectionAnalysisService(AppDbContext db, MessageNormalizer normalizer)
+    {
+        _db = db;
+        _normalizer = normalizer;
+    }
 
     public async Task<List<ConnectionIncident>> GetIncidentsAsync(LogQueryFilter filter)
     {
@@ -31,6 +38,7 @@ public class ConnectionAnalysisService
                         DisconnectedAt = log.Timestamp,
                         ObservedUntil = log.Timestamp,
                         IsOngoing = true,
+                        DisconnectEvent = ToContext(log),
                         LogsBeforeDisconnection = orderedLogs
                             .Take(index)
                             .TakeLast(ContextLineCount)
@@ -54,6 +62,7 @@ public class ConnectionAnalysisService
                 if (IsCloudReconnection(log))
                 {
                     activeIncident.ReconnectedAt = log.Timestamp;
+                    activeIncident.RecoveryEvent = ToContext(log);
                     activeIncident.IsOngoing = false;
                     Complete(activeIncident);
                     incidents.Add(activeIncident);
@@ -79,8 +88,30 @@ public class ConnectionAnalysisService
 
         return incidents
             .OrderByDescending(incident => incident.DisconnectedAt)
-            .Take(Math.Clamp(filter.Limit, 1, 500))
+            .Take(Math.Clamp(filter.Limit, 1, MaxIncidentCount))
             .ToList();
+    }
+
+    public async Task<List<ConnectionIncidentSummary>> GetIncidentSummariesAsync(LogQueryFilter filter)
+    {
+        var incidents = await GetIncidentsAsync(filter);
+        return incidents.Select(ToSummary).ToList();
+    }
+
+    public async Task<ConnectionIncident?> GetIncidentEvidenceAsync(string incidentKey)
+    {
+        if (!TryParseIncidentKey(incidentKey, out var deviceId, out var disconnectedAt))
+            return null;
+
+        var incidents = await GetIncidentsAsync(new LogQueryFilter
+        {
+            DeviceId = deviceId,
+            Limit = MaxIncidentCount
+        });
+
+        return incidents.SingleOrDefault(incident =>
+            incident.DeviceId.Equals(deviceId, StringComparison.OrdinalIgnoreCase) &&
+            incident.DisconnectedAt.Ticks == disconnectedAt.Ticks);
     }
 
     public async Task<List<HeartbeatExecution>> GetHeartbeatsAsync(LogQueryFilter filter)
@@ -261,4 +292,88 @@ public class ConnectionAnalysisService
         Source = log.Source,
         EventId = log.EventId
     };
+
+    private ConnectionIncidentSummary ToSummary(ConnectionIncident incident)
+    {
+        var failedHeartbeats = incident.HeartbeatsDuringDisconnection
+            .Where(heartbeat => heartbeat.HasCloudConnectionFailure)
+            .ToList();
+
+        return new ConnectionIncidentSummary
+        {
+            IncidentKey = CreateIncidentKey(incident),
+            DeviceId = incident.DeviceId,
+            DisconnectedAt = incident.DisconnectedAt,
+            ReconnectedAt = incident.ReconnectedAt,
+            DurationMinutes = Math.Round(incident.DurationHours * 60, 1),
+            Status = incident.IsOngoing ? "Ongoing" : "Resolved",
+            Severity = GetSeverity(incident),
+            IsProlongedOver12Hours = incident.IsProlongedOver12Hours,
+            IsProlongedOver24Hours = incident.IsProlongedOver24Hours,
+            DisconnectReason = incident.DisconnectEvent?.Message ?? "Cloud connection unavailable.",
+            RecoverySignal = incident.RecoveryEvent?.Message,
+            HeartbeatSummary = new HeartbeatSummary
+            {
+                TotalRuns = incident.HeartbeatsDuringDisconnection.Count,
+                FailedRuns = failedHeartbeats.Count,
+                LastFailureAt = failedHeartbeats.LastOrDefault()?.StartedAt
+            },
+            PrecedingErrors = incident.ErrorsBeforeDisconnection
+                .GroupBy(error => _normalizer.Normalize(error.Message))
+                .Select(group => new ConnectionErrorSummary
+                {
+                    Pattern = group.Key,
+                    Count = group.Count(),
+                    LastSeenAt = group.Max(error => error.Timestamp)
+                })
+                .OrderByDescending(error => error.Count)
+                .ThenByDescending(error => error.LastSeenAt)
+                .Take(3)
+                .ToList(),
+            Evidence = new ConnectionIncidentEvidenceReference
+            {
+                DisconnectEventId = incident.DisconnectEvent?.EventId,
+                RecoveryEventId = incident.RecoveryEvent?.EventId
+            }
+        };
+    }
+
+    private static string GetSeverity(ConnectionIncident incident)
+    {
+        if (incident.IsProlongedOver24Hours)
+            return "Critical";
+        if (incident.IsProlongedOver12Hours)
+            return "High";
+        if (incident.IsOngoing)
+            return "Medium";
+
+        return "Low";
+    }
+
+    private static string CreateIncidentKey(ConnectionIncident incident) =>
+        $"{Uri.EscapeDataString(incident.DeviceId)}~{incident.DisconnectedAt.Ticks}";
+
+    private static bool TryParseIncidentKey(
+        string incidentKey,
+        out string deviceId,
+        out DateTime disconnectedAt)
+    {
+        deviceId = string.Empty;
+        disconnectedAt = default;
+
+        var separator = incidentKey.LastIndexOf('~');
+        if (separator <= 0 || !long.TryParse(incidentKey[(separator + 1)..], out var ticks))
+            return false;
+
+        try
+        {
+            deviceId = Uri.UnescapeDataString(incidentKey[..separator]);
+            disconnectedAt = new DateTime(ticks);
+            return !string.IsNullOrWhiteSpace(deviceId);
+        }
+        catch (ArgumentOutOfRangeException)
+        {
+            return false;
+        }
+    }
 }

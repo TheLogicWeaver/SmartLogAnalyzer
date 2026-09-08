@@ -4,6 +4,10 @@ GET {{SmartLogAnalyzer_HostAddress}}/api/insights/connection-incidents
 Accept: application/json
 
 ###
+GET {{SmartLogAnalyzer_HostAddress}}/api/insights/connection-incidents/{incidentKey}/evidence
+Accept: application/json
+
+###
 GET {{SmartLogAnalyzer_HostAddress}}/api/insights/heartbeats
 Accept: application/json
 

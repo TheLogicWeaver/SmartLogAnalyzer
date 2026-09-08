@@ -1,4 +1,5 @@
 using Microsoft.EntityFrameworkCore;
+using SmartLogAnalyzer.Models;
 
 public class LogInsightsService
 {
