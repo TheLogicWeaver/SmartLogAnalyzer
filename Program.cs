@@ -30,50 +30,37 @@ app.MapPost("/upload-log", async (IFormFile file, LogIngestionService ingestionS
 })
 .DisableAntiforgery();
 
-app.MapGet("/insights/summary", async (LogInsightsService service) =>
+app.MapGet("/api/insights/summary",
+    async (LogInsightsService service) =>
 {
     return await service.GetSummaryAsync();
 })
 .DisableAntiforgery();
 
-app.MapGet("/insights/top-messages-by-level", async (LogInsightsService service, string level, int top) =>
+app.MapGet("/api/insights/top-messages",
+    async (
+        [AsParameters] LogQueryFilter filter,
+        LogInsightsService service) =>
 {
-    return await service.GetTopMessagesByLevelAsync(level, top);
+    return await service.GetTopMessagesAsync(filter);
 })
 .DisableAntiforgery();
 
-app.MapGet("/insights/top-messages-by-level-deviceId", 
-async (LogInsightsService service, string level, string deviceId, int top) =>
+app.MapGet("/api/insights/logs",
+    async (
+        [AsParameters] LogQueryFilter filter,
+        LogInsightsService service) =>
 {
-    return await service.GetTopMessagesByLevelAndDeviceIdAsync(level, deviceId, top);
+    return await service.GetLogsAsync(filter);
 })
 .DisableAntiforgery();
 
-app.MapGet("/insights/logs-by-level", async (LogInsightsService service, string level) =>
+app.MapGet("/api/insights/smart-groups",
+    async (
+        [AsParameters] LogQueryFilter filter,
+        LogInsightsService service) =>
 {
-    return await service.GetLogsByLevelAsync(level);
-})
-.DisableAntiforgery();
-
-app.MapGet("/insights/logs-by-level-deviceId", async (LogInsightsService service, string level, string deviceId) =>
-{
-    return await service.GetLogsByLevelDeviceIdAsync(level, deviceId);
-})
-.DisableAntiforgery();
-
-app.MapGet("/insights/smart-groups", async (
-    string level,
-    int top,
-    LogInsightsService service) =>
-{
-    return await service.GetSmartGroupsAsync(level, top);
-})
-.DisableAntiforgery();
-
-app.MapGet("/insights/smart-groups-by-deviceId", 
-async (LogInsightsService service, string level, int top, string deviceId) =>
-{
-    return await service.GetSmartGroupsByDeviceId(level, top, deviceId);
+    return await service.GetSmartGroupsAsync(filter);
 })
 .DisableAntiforgery();
 
