@@ -75,7 +75,7 @@ app.MapGet("/insights/anomalies", async (
 .DisableAntiforgery();
 
 app.MapGet("/api/insights/connection-incidents", async (
-    [AsParameters] LogQueryFilter filter,
+    [AsParameters] ConnectionIncidentFilter filter,
     ConnectionAnalysisService service) =>
 {
     return await service.GetIncidentSummariesAsync(filter);
@@ -92,7 +92,7 @@ app.MapGet("/api/insights/connection-incidents/{incidentKey}/evidence", async (
 .DisableAntiforgery();
 
 app.MapGet("/api/insights/heartbeats", async (
-    [AsParameters] LogQueryFilter filter,
+    [AsParameters] HeartbeatFilter filter,
     ConnectionAnalysisService service) =>
 {
     return await service.GetHeartbeatsAsync(filter);

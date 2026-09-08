@@ -15,9 +15,9 @@ public class ConnectionAnalysisService
         _normalizer = normalizer;
     }
 
-    public async Task<List<ConnectionIncident>> GetIncidentsAsync(LogQueryFilter filter)
+    public async Task<List<ConnectionIncident>> GetIncidentsAsync(ConnectionIncidentFilter filter)
     {
-        var logs = await GetFilteredLogsAsync(filter, includeUnprovisionedContext: true);
+        var logs = await GetIncidentLogsAsync(filter);
         var incidents = new List<ConnectionIncident>();
 
         foreach (var (deviceId, deviceLogs) in BuildDeviceTimelines(logs, filter.DeviceId))
@@ -92,7 +92,7 @@ public class ConnectionAnalysisService
             .ToList();
     }
 
-    public async Task<List<ConnectionIncidentSummary>> GetIncidentSummariesAsync(LogQueryFilter filter)
+    public async Task<List<ConnectionIncidentSummary>> GetIncidentSummariesAsync(ConnectionIncidentFilter filter)
     {
         var incidents = await GetIncidentsAsync(filter);
         return incidents.Select(ToSummary).ToList();
@@ -103,7 +103,7 @@ public class ConnectionAnalysisService
         if (!TryParseIncidentKey(incidentKey, out var deviceId, out var disconnectedAt))
             return null;
 
-        var incidents = await GetIncidentsAsync(new LogQueryFilter
+        var incidents = await GetIncidentsAsync(new ConnectionIncidentFilter
         {
             DeviceId = deviceId,
             Limit = MaxIncidentCount
@@ -114,14 +114,22 @@ public class ConnectionAnalysisService
             incident.DisconnectedAt.Ticks == disconnectedAt.Ticks);
     }
 
-    public async Task<List<HeartbeatExecution>> GetHeartbeatsAsync(LogQueryFilter filter)
+    public async Task<List<HeartbeatExecution>> GetHeartbeatsAsync(HeartbeatFilter filter)
     {
-        var logs = await GetFilteredLogsAsync(filter, includeUnprovisionedContext: false);
-        return logs.GroupBy(log => log.DeviceId)
+        var logs = await GetHeartbeatLogsAsync(filter);
+
+        var heartbeats = logs.GroupBy(log => log.DeviceId)
             .SelectMany(deviceLogs => BuildHeartbeatExecutions(
                 deviceLogs.OrderBy(log => log.Timestamp).ThenBy(log => log.Id).ToList(),
                 deviceLogs.Key))
-            .OrderByDescending(heartbeat => heartbeat.StartedAt)
+            .OrderByDescending(heartbeat => heartbeat.StartedAt);
+
+        var filteredHeartbeats = filter.HasCloudConnectionFailure.HasValue
+        ? heartbeats.Where(heartbeat =>
+        heartbeat.HasCloudConnectionFailure == filter.HasCloudConnectionFailure.Value)
+        : heartbeats;
+
+        return filteredHeartbeats
             .Take(Math.Clamp(filter.Limit, 1, 500))
             .ToList();
     }
@@ -142,6 +150,35 @@ public class ConnectionAnalysisService
 
         return await query.ToListAsync();
     }
+
+    private async Task<List<LogEntryEntity>> GetIncidentLogsAsync(
+        ConnectionIncidentFilter filter)
+    {
+        var query = _db.Logs.AsNoTracking();
+
+        if (!string.IsNullOrWhiteSpace(filter.DeviceId))
+        {
+            query = query.Where(log =>
+                log.DeviceId.Contains(filter.DeviceId) ||
+                log.DeviceId == UnprovisionedDeviceId);
+        }
+
+        return await query.ToListAsync();
+    }
+
+    private async Task<List<LogEntryEntity>> GetHeartbeatLogsAsync(
+        HeartbeatFilter filter)
+    {
+        var query = _db.Logs.AsNoTracking();
+
+        if (!string.IsNullOrWhiteSpace(filter.DeviceId))
+        {
+            query = query.Where(log =>
+                log.DeviceId.Contains(filter.DeviceId));
+        }
+
+        return await query.ToListAsync();
+    }    
 
     private static List<(string DeviceId, List<LogEntryEntity> Logs)> BuildDeviceTimelines(
         List<LogEntryEntity> logs,
