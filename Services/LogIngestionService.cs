@@ -12,7 +12,7 @@ public class LogIngestionService
         _db = db;
     }
 
-    public async Task<int> ProcessFileAsync(Stream stream)
+    public async Task<int> ProcessFileAsync(Stream stream, string? source = null)
     {
         using var reader = new StreamReader(stream);
 
@@ -29,7 +29,7 @@ public class LogIngestionService
             if (parsed == null)
                 continue;
 
-            var entity = MapToEntity(parsed, line);
+            var entity = MapToEntity(parsed, line, source);
 
             batch.Add(entity);
 
@@ -56,7 +56,7 @@ public class LogIngestionService
         await _db.SaveChangesAsync();
     }
 
-    private LogEntryEntity MapToEntity(LogEntry entry, string rawLine)
+    private LogEntryEntity MapToEntity(LogEntry entry, string rawLine, string? source)
     {
         return new LogEntryEntity
         {
@@ -64,7 +64,7 @@ public class LogIngestionService
             Level = entry.Level,
             Message = entry.Message,
             DeviceId = entry.DeviceId ?? string.Empty,
-            Source = entry.Source ?? string.Empty,
+            Source = source ?? entry.Source ?? string.Empty,
             EventId = entry.EventId,
             RawLine = rawLine,
             Metadata = entry.Metadata.Select(m => new LogMetadataEntity

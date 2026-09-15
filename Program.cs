@@ -1,15 +1,17 @@
 using Microsoft.EntityFrameworkCore;
+using System.IO;
 using SmartLogAnalyzer.Models;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
 builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite("Data Source=logs.db"));
+    options.UseSqlite($"Data Source={Path.Combine(builder.Environment.ContentRootPath, "logs.db")}"));
 builder.Services.AddScoped<LogParserFactory>();
 builder.Services.AddScoped<LogProcessingService>();
 builder.Services.AddScoped<LogIngestionService>();
 builder.Services.AddScoped<LogInsightsService>();
+builder.Services.AddScoped<DiagnosticTranscriptService>();
 builder.Services.AddSingleton<MessageNormalizer>();
 builder.Services.AddScoped<IAnomalyDetector, SpikeAnomalyDetector>();
 builder.Services.AddScoped<AnomalyInterpreter>();
@@ -19,14 +21,16 @@ builder.Services.AddScoped<ConnectionAnalysisService>();
 var app = builder.Build();
 app.UseSwagger();
 app.UseSwaggerUI();
-app.MapPost("/upload-log", async (IFormFile file, LogIngestionService ingestionService) =>
+app.MapPost("/upload-log", async (IFormFile file, HttpRequest req, LogIngestionService ingestionService) =>
 {
     if (file == null || file.Length == 0)
         return Results.BadRequest("No file uploaded");
 
+    var source = req.Form["source"].FirstOrDefault();
+
     using var stream = file.OpenReadStream();
 
-    var count = await ingestionService.ProcessFileAsync(stream);
+    var count = await ingestionService.ProcessFileAsync(stream, source);
 
     return Results.Ok(new { Inserted = count });
 })
@@ -99,4 +103,14 @@ app.MapGet("/api/insights/heartbeats", async (
 })
 .DisableAntiforgery();
 
+app.MapGet("/api/diagnostics/transcript-summary", async (string? deviceId, DiagnosticTranscriptService service) =>
+{
+    if (string.IsNullOrWhiteSpace(deviceId))
+        return Results.BadRequest("Missing required 'deviceId' query parameter.");
+
+    var summary = await service.AnalyzeAsync(deviceId);
+
+    return summary == null ? Results.NotFound() : Results.Ok(summary);
+})
+.DisableAntiforgery();
 app.Run();

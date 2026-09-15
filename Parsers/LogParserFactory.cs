@@ -6,7 +6,8 @@ public class LogParserFactory
     {
         _parsers = new List<ILogParser>
         {
-            new IotGatewayLogParser()
+            new IotGatewayLogParser(),
+            new DiagnosticTranscriptParser()
         };
     }
 
