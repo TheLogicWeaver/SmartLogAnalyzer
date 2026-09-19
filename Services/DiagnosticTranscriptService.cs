@@ -6,6 +6,16 @@ using SmartLogAnalyzer.Models;
 public class DiagnosticTranscriptService
 {
     private static readonly Regex SectionRegex = new Regex(@"^\s*(?<sec>(?:\d+\.\d+|[A-Z]\.\d+))\b", RegexOptions.Compiled);
+
+    // "<subject>   NotAfter=<yyyy-MM-dd HH:mm:ssZ> <thumbprint>" as emitted by sections 3.1 and 3.2.
+    private static readonly Regex CertificateLineRegex = new Regex(
+        @"^(?<subject>.+?)\s+NotAfter=(?<notAfter>.+?)\s+(?<thumbprint>[A-Fa-f0-9]{20,})\s*$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
+    private static readonly Regex ServerCertFieldRegex = new Regex(
+        @"^(?<k>Subject|Issuer|NotBefore|NotAfter|Thumbprint)\s*:\s*(?<v>.*)$",
+        RegexOptions.Compiled | RegexOptions.IgnoreCase);
+
     private readonly AppDbContext _db;
 
     public DiagnosticTranscriptService(AppDbContext db)
@@ -55,19 +65,6 @@ public class DiagnosticTranscriptService
 
     private object AnalyzeLines(List<string> includedLines, string sourceLabel, bool isExactDeviceQuery)
     {
-        var total = includedLines.Count;
-        var errors = includedLines.Count(l => l.IndexOf("error", StringComparison.OrdinalIgnoreCase) >= 0);
-        var warnings = includedLines.Count(l => l.IndexOf("warning", StringComparison.OrdinalIgnoreCase) >= 0);
-
-        // Global scan for certificate reads anywhere in the included window
-        var globalCertReads = includedLines
-            .Select(l => Regex.Match(l, "Read the certificate \"(?<cert>[^\"]+)\"", RegexOptions.IgnoreCase))
-            .Where(m => m.Success)
-            .Select(m => m.Groups["cert"].Value)
-            .ToList();
-
-        // topMessages removed: this API focuses on transcript diagnostic sections only
-
         // Parse sections into structured diagnostic checks
         var sections = new List<(string Id, string Title, List<string> Lines)>();
         string? curId = null;
@@ -98,20 +95,17 @@ public class DiagnosticTranscriptService
             sections.Add((curId, curTitle ?? string.Empty, curLines));
 
         // Structured extraction for known sections
-        object? gatewayService = null;
         object? deviceConfiguration = null;
         object? dpsTcp = null;
-        object? tlsDps = null;
-        var certReads = new List<string>();
-        var trustedRootCAs = new List<string>();
+        var trustedRootCAs = new List<TranscriptCertificate>();
+        var seenTrustedRootThumbprints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var intermediateCAs = new List<TranscriptCertificate>();
+        var seenIntermediateThumbprints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        object? serverCertificate = null;
         var gatewayClientCerts = new List<object>();
 
         object? winHttpProxyService = null;
         object? winHttpAutoProxyService = null;
-        var gatewayTcpConnections = new List<string>();
-        object? tls12Client = null;
-        object? windowsTimeService = null;
-        object? webSocketUpgrade = null;
 
         // Only include sections in the requested ranges: 1.2..A.3 (inclusive) and A.5
         bool inRange = false;
@@ -125,18 +119,9 @@ public class DiagnosticTranscriptService
 
             var idPrefix = id.Split('_')[0];
 
-            // Always capture Gateway TCP connections (6.2) regardless of the 1.2..A.3 range
+            // 6.2 is not reported; skip it so its lines cannot leak into other checks.
             if (idPrefix == "6.2")
-            {
-                foreach (var ln in cleaned)
-                {
-                    var t = ln.Trim();
-                    if (t.StartsWith("TCP", StringComparison.OrdinalIgnoreCase) || t.IndexOf("PID", StringComparison.OrdinalIgnoreCase) >= 0 || t.IndexOf("Radiometer.Lc.IotGateway.Service", StringComparison.OrdinalIgnoreCase) >= 0)
-                        gatewayTcpConnections.Add(t);
-                }
-                // continue to next section (we handled 6.2)
                 continue;
-            }
 
             if (idPrefix == "1.2")
                 inRange = true;
@@ -159,17 +144,6 @@ public class DiagnosticTranscriptService
             if (idPrefix == "A.3")
                 inRange = false; // include A.3 then end range
 
-            if ((id.IndexOf("GatewayServiceStatus", StringComparison.OrdinalIgnoreCase) >= 0) || id.StartsWith("1.2"))
-            {
-                var svcLine = cleaned.FirstOrDefault(x => !string.IsNullOrWhiteSpace(x));
-                if (svcLine != null)
-                {
-                    var svcMatch = Regex.Match(svcLine.Trim(), @"^(?<svc>\S+)\s+(?<status>\S+)");
-                    if (svcMatch.Success)
-                        gatewayService = new { Service = svcMatch.Groups["svc"].Value, ServiceStatus = svcMatch.Groups["status"].Value };
-                }
-            }
-
             if ((id.IndexOf("DeviceConfiguration", StringComparison.OrdinalIgnoreCase) >= 0) || id.StartsWith("1.3"))
             {
                 var begin = lines.FindIndex(l => l.Contains("BEGIN DeviceConfiguration.json"));
@@ -181,11 +155,19 @@ public class DiagnosticTranscriptService
                     try
                     {
                         var parsed = JsonSerializer.Deserialize<JsonElement>(jsonText);
-                        string? serial = null;
-                        if (parsed.ValueKind == JsonValueKind.Object && parsed.TryGetProperty("ClientSerialNumber", out var el))
-                            serial = el.GetString();
 
-                        deviceConfiguration = new { Parsed = parsed, ClientSerialNumber = serial };
+                        // Dictionary keeps the original property casing in the response.
+                        var config = new Dictionary<string, string?>();
+                        if (parsed.ValueKind == JsonValueKind.Object)
+                        {
+                            if (parsed.TryGetProperty("ClientType", out var clientType))
+                                config["ClientType"] = clientType.GetString();
+                            if (parsed.TryGetProperty("BusinessUnitName", out var businessUnit))
+                                config["BusinessUnitName"] = businessUnit.GetString();
+                        }
+
+                        if (config.Count > 0)
+                            deviceConfiguration = config;
                     }
                     catch
                     {
@@ -217,14 +199,6 @@ public class DiagnosticTranscriptService
                 };
             }
 
-            if ((id.IndexOf("TlsDpsDirect", StringComparison.OrdinalIgnoreCase) >= 0) || id.StartsWith("2.2"))
-            {
-                var established = cleaned.Any(x => x.IndexOf("Established connection", StringComparison.OrdinalIgnoreCase) >= 0 || x.IndexOf("SSL/TLS connection renegotiated", StringComparison.OrdinalIgnoreCase) >= 0);
-                var httpResp = cleaned.FirstOrDefault(x => x.TrimStart().StartsWith("< HTTP/", StringComparison.OrdinalIgnoreCase));
-                var xms = cleaned.FirstOrDefault(x => x.IndexOf("x-ms-request-id", StringComparison.OrdinalIgnoreCase) >= 0);
-                tlsDps = new { TlsEstablished = established, HttpResponse = httpResp, XMsRequestId = xms };
-            }
-
             // WinHTTP proxy blocks: parse key: value pairs inside section (A.3 / A.5)
             if (idPrefix == "A.3" || idPrefix == "A.5" || cleaned.Any(l => l.IndexOf("WinHttp", StringComparison.OrdinalIgnoreCase) >= 0))
             {
@@ -240,7 +214,14 @@ public class DiagnosticTranscriptService
                 {
                     if (kv.TryGetValue("Name", out var name) && name.IndexOf("WinHttpAutoProxySvc", StringComparison.OrdinalIgnoreCase) >= 0)
                     {
-                        winHttpAutoProxyService = kv;
+                        var svc = new Dictionary<string, string>();
+                        foreach (var key in new[] { "Name", "DisplayName", "Status", "StartType" })
+                        {
+                            if (kv.TryGetValue(key, out var value))
+                                svc[key] = value;
+                        }
+
+                        winHttpAutoProxyService = svc;
                     }
 
                     if (kv.TryGetValue("Current WinHTTP proxy settings", out var win) || kv.TryGetValue("Direct access (no proxy server).", out win))
@@ -251,59 +232,82 @@ public class DiagnosticTranscriptService
             }
 
             // TCP connections owned by gateway process: collect lines under GatewayTcpConnections section (6.2)
-            if ((id.IndexOf("GatewayTcpConnections", StringComparison.OrdinalIgnoreCase) >= 0) || id.StartsWith("6.2"))
+            // Trusted root CAs (3.1)
+            if ((id.IndexOf("TrustedRootCAs", StringComparison.OrdinalIgnoreCase) >= 0) || idPrefix == "3.1")
             {
                 foreach (var ln in cleaned)
                 {
-                    if (Regex.IsMatch(ln, "^TCP\\s+", RegexOptions.IgnoreCase) || ln.Contains("PID") || ln.Contains("Radiometer.Lc.IotGateway.Service"))
-                        gatewayTcpConnections.Add(ln.Trim());
+                    var t = ln.Trim();
+                    if (t.Length == 0 || Regex.IsMatch(t, "^={3,}$"))
+                        continue;
+
+                    var cert = ParseCertificateLine(t);
+                    if (cert is null)
+                        continue;
+
+                    if (cert.Thumbprint is null || seenTrustedRootThumbprints.Add(cert.Thumbprint))
+                        trustedRootCAs.Add(cert);
                 }
                 continue;
             }
 
-            // TLS 1.2 client settings
-            if (lines.Any(l => l.IndexOf("TLS 1.2", StringComparison.OrdinalIgnoreCase) >= 0 || l.IndexOf("Tls12", StringComparison.OrdinalIgnoreCase) >= 0 || l.IndexOf("SecurityProtocol", StringComparison.OrdinalIgnoreCase) >= 0))
-            {
-                var ln = lines.FirstOrDefault(l => l.IndexOf("TLS 1.2", StringComparison.OrdinalIgnoreCase) >= 0 || l.IndexOf("Tls12", StringComparison.OrdinalIgnoreCase) >= 0 || l.IndexOf("SecurityProtocol", StringComparison.OrdinalIgnoreCase) >= 0);
-                if (ln != null)
-                {
-                    var enabled = ln.IndexOf("True", StringComparison.OrdinalIgnoreCase) >= 0 || ln.IndexOf("Enabled", StringComparison.OrdinalIgnoreCase) >= 0 || ln.IndexOf("Tls12", StringComparison.OrdinalIgnoreCase) >= 0 && ln.IndexOf("Enabled", StringComparison.OrdinalIgnoreCase) >= 0;
-                    tls12Client = new { Raw = ln.Trim(), Enabled = enabled };
-                }
-            }
-
-            // Windows Time service / time sync
-            if (lines.Any(l => l.IndexOf("Windows Time", StringComparison.OrdinalIgnoreCase) >= 0 || l.IndexOf("w32time", StringComparison.OrdinalIgnoreCase) >= 0))
-            {
-                var ln = lines.FirstOrDefault(l => l.IndexOf("Windows Time", StringComparison.OrdinalIgnoreCase) >= 0 || l.IndexOf("w32time", StringComparison.OrdinalIgnoreCase) >= 0);
-                if (ln != null)
-                {
-                    var m = Regex.Match(ln, "(Running|Stopped|Synchronized|Not synchronized|Sync|Succeeded)", RegexOptions.IgnoreCase);
-                    var status = m.Success ? m.Groups[1].Value : null;
-                    windowsTimeService = new { Raw = ln.Trim(), Status = status };
-                }
-            }
-
-            // WebSocket upgrade probe
-            if (lines.Any(l => l.IndexOf("WebSocket", StringComparison.OrdinalIgnoreCase) >= 0 || l.IndexOf("Upgrade", StringComparison.OrdinalIgnoreCase) >= 0))
-            {
-                var wsLine = lines.FirstOrDefault(l => l.IndexOf("WebSocket", StringComparison.OrdinalIgnoreCase) >= 0 || l.IndexOf("Upgrade", StringComparison.OrdinalIgnoreCase) >= 0);
-                if (wsLine != null)
-                {
-                    var ok = wsLine.IndexOf("101", StringComparison.OrdinalIgnoreCase) >= 0 || wsLine.IndexOf("Upgrade: websocket", StringComparison.OrdinalIgnoreCase) >= 0 || wsLine.IndexOf("websocket", StringComparison.OrdinalIgnoreCase) >= 0 && wsLine.IndexOf("upgrade", StringComparison.OrdinalIgnoreCase) >= 0;
-                    webSocketUpgrade = new { Raw = wsLine.Trim(), Success = ok };
-                }
-            }
-
-            // Trusted root CAs (3.1)
-            if ((id.IndexOf("TrustedRootCAs", StringComparison.OrdinalIgnoreCase) >= 0) || id.StartsWith("3.1"))
+            // Intermediate CAs in the local machine store (3.2)
+            if ((id.IndexOf("IntermediateCACheck", StringComparison.OrdinalIgnoreCase) >= 0) || idPrefix == "3.2")
             {
                 foreach (var ln in cleaned)
                 {
-                    // skip separators
-                    if (Regex.IsMatch(ln.Trim(), "^={3,}$"))
+                    var t = ln.Trim();
+                    if (t.Length == 0 || Regex.IsMatch(t, "^={3,}$"))
                         continue;
-                    trustedRootCAs.Add(ln.Trim());
+
+                    var cert = ParseCertificateLine(t);
+                    if (cert is null)
+                        continue;
+
+                    if (cert.Thumbprint is null || seenIntermediateThumbprints.Add(cert.Thumbprint))
+                        intermediateCAs.Add(cert);
+                }
+                continue;
+            }
+
+            // Server certificate presented by DPS (3.3)
+            if ((id.IndexOf("ServerCertInspect", StringComparison.OrdinalIgnoreCase) >= 0) || idPrefix == "3.3")
+            {
+                var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
+                var notes = new List<string>();
+
+                foreach (var ln in cleaned)
+                {
+                    var t = ln.Trim();
+                    if (t.Length == 0 || Regex.IsMatch(t, "^={3,}$"))
+                        continue;
+
+                    var fm = ServerCertFieldRegex.Match(t);
+                    if (fm.Success)
+                        fields[fm.Groups["k"].Value] = fm.Groups["v"].Value.Trim();
+                    else
+                        notes.Add(t);
+                }
+
+                if (fields.Count > 0 || notes.Count > 0)
+                {
+                    fields.TryGetValue("Subject", out var subject);
+                    fields.TryGetValue("Issuer", out var issuer);
+                    fields.TryGetValue("NotBefore", out var notBefore);
+                    fields.TryGetValue("NotAfter", out var notAfter);
+                    fields.TryGetValue("Thumbprint", out var thumbprint);
+
+                    serverCertificate = new
+                    {
+                        Subject = subject,
+                        CommonName = ExtractCommonName(subject),
+                        Issuer = issuer,
+                        IssuerCommonName = ExtractCommonName(issuer),
+                        NotBefore = notBefore,
+                        NotAfter = notAfter,
+                        Thumbprint = thumbprint,
+                        Notes = notes
+                    };
                 }
                 continue;
             }
@@ -347,43 +351,19 @@ public class DiagnosticTranscriptService
                 }
                 continue;
             }
-
-            // Collect certificate read lines (from app logs within included sections)
-            foreach (var ln in lines)
-            {
-                var c = Regex.Match(ln, "Read the certificate \"(?<cert>[^\"]+)\"", RegexOptions.IgnoreCase);
-                if (c.Success)
-                    certReads.Add(c.Groups["cert"].Value);
-            }
         }
-
-        // Merge global cert reads + section-local reads, and apply exact-device filtering if requested
-        var allCerts = new List<string>();
-        allCerts.AddRange(globalCertReads);
-        allCerts.AddRange(certReads);
-        var finalCerts = allCerts.Distinct().ToList();
-        if (isExactDeviceQuery)
-            finalCerts = finalCerts.Where(c => c.IndexOf(sourceLabel, StringComparison.OrdinalIgnoreCase) >= 0).ToList();
 
         return new
         {
             Source = sourceLabel,
-            TotalIncludedLines = total,
-            Errors = errors,
-            Warnings = warnings,
-            GatewayService = gatewayService,
             DeviceConfiguration = deviceConfiguration,
             DpsTcp = dpsTcp,
-            TlsDps = tlsDps,
-            CertificatesRead = finalCerts,
-            TrustedRootCAs = trustedRootCAs.Distinct().ToList(),
+            TrustedRootCAs = trustedRootCAs,
+            IntermediateCAs = intermediateCAs,
+            ServerCertificate = serverCertificate,
             GatewayClientCertificates = gatewayClientCerts,
             WinHttpProxyService = winHttpProxyService,
-            WinHttpAutoProxyService = winHttpAutoProxyService,
-            GatewayTcpConnections = gatewayTcpConnections.Distinct().ToList(),
-            Tls12Client = tls12Client,
-            WindowsTimeService = windowsTimeService,
-            WebSocketUpgrade = webSocketUpgrade
+            WinHttpAutoProxyService = winHttpAutoProxyService
         };
     }
 
@@ -393,4 +373,40 @@ public class DiagnosticTranscriptService
         t = Regex.Replace(t, @"\s+", " ").Trim();
         return t;
     }
+
+    private static TranscriptCertificate? ParseCertificateLine(string line)
+    {
+        var m = CertificateLineRegex.Match(line);
+        if (!m.Success)
+            return null;
+
+        var subject = m.Groups["subject"].Value.Trim();
+
+        return new TranscriptCertificate
+        {
+            Line = line,
+            Subject = subject,
+            CommonName = ExtractCommonName(subject),
+            NotAfter = m.Groups["notAfter"].Value.Trim(),
+            Thumbprint = m.Groups["thumbprint"].Value.Trim()
+        };
+    }
+
+    private static string? ExtractCommonName(string? distinguishedName)
+    {
+        if (string.IsNullOrWhiteSpace(distinguishedName))
+            return null;
+
+        var m = Regex.Match(distinguishedName, "CN=(?<cn>[^,]+)", RegexOptions.IgnoreCase);
+        return m.Success ? m.Groups["cn"].Value.Trim() : null;
+    }
+}
+
+public record TranscriptCertificate
+{
+    public string Line { get; init; } = string.Empty;
+    public string? Subject { get; init; }
+    public string? CommonName { get; init; }
+    public string? NotAfter { get; init; }
+    public string? Thumbprint { get; init; }
 }

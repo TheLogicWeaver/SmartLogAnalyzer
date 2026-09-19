@@ -19,6 +19,12 @@ builder.Services.AddScoped<LogAnomalyAnalysisService>();
 builder.Services.AddScoped<ConnectionAnalysisService>();
 
 var app = builder.Build();
+
+using (var scope = app.Services.CreateScope())
+{
+    scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate();
+}
+
 app.UseSwagger();
 app.UseSwaggerUI();
 app.MapPost("/upload-log", async (IFormFile file, HttpRequest req, LogIngestionService ingestionService) =>
