@@ -7,15 +7,6 @@ public class DiagnosticTranscriptService
 {
     private static readonly Regex SectionRegex = new Regex(@"^\s*(?<sec>(?:\d+\.\d+|[A-Z]\.\d+))\b", RegexOptions.Compiled);
 
-    // "<subject>   NotAfter=<yyyy-MM-dd HH:mm:ssZ> <thumbprint>" as emitted by sections 3.1 and 3.2.
-    private static readonly Regex CertificateLineRegex = new Regex(
-        @"^(?<subject>.+?)\s+NotAfter=(?<notAfter>.+?)\s+(?<thumbprint>[A-Fa-f0-9]{20,})\s*$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
-    private static readonly Regex ServerCertFieldRegex = new Regex(
-        @"^(?<k>Subject|Issuer|NotBefore|NotAfter|Thumbprint)\s*:\s*(?<v>.*)$",
-        RegexOptions.Compiled | RegexOptions.IgnoreCase);
-
     private readonly AppDbContext _db;
 
     public DiagnosticTranscriptService(AppDbContext db)
@@ -97,11 +88,6 @@ public class DiagnosticTranscriptService
         // Structured extraction for known sections
         object? deviceConfiguration = null;
         object? dpsTcp = null;
-        var trustedRootCAs = new List<TranscriptCertificate>();
-        var seenTrustedRootThumbprints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        var intermediateCAs = new List<TranscriptCertificate>();
-        var seenIntermediateThumbprints = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
-        object? serverCertificate = null;
         var gatewayClientCerts = new List<object>();
 
         object? winHttpProxyService = null;
@@ -146,34 +132,30 @@ public class DiagnosticTranscriptService
 
             if ((id.IndexOf("DeviceConfiguration", StringComparison.OrdinalIgnoreCase) >= 0) || id.StartsWith("1.3"))
             {
+                var valid = false;
                 var begin = lines.FindIndex(l => l.Contains("BEGIN DeviceConfiguration.json"));
                 var end = lines.FindIndex(l => l.Contains("END DeviceConfiguration.json"));
                 if (begin >= 0 && end > begin)
                 {
-                    var jsonLines = lines.Skip(begin + 1).Take(end - begin - 1).ToArray();
-                    var jsonText = string.Join('\n', jsonLines);
+                    var jsonText = string.Join('\n', lines.Skip(begin + 1).Take(end - begin - 1));
                     try
                     {
                         var parsed = JsonSerializer.Deserialize<JsonElement>(jsonText);
 
-                        // Dictionary keeps the original property casing in the response.
-                        var config = new Dictionary<string, string?>();
-                        if (parsed.ValueKind == JsonValueKind.Object)
-                        {
-                            if (parsed.TryGetProperty("ClientType", out var clientType))
-                                config["ClientType"] = clientType.GetString();
-                            if (parsed.TryGetProperty("BusinessUnitName", out var businessUnit))
-                                config["BusinessUnitName"] = businessUnit.GetString();
-                        }
-
-                        if (config.Count > 0)
-                            deviceConfiguration = config;
+                        valid = parsed.ValueKind == JsonValueKind.Object
+                            && HasText(parsed, "ClientSerialNumber")
+                            && HasText(parsed, "ClientType")
+                            && HasText(parsed, "BusinessUnitName")
+                            && parsed.TryGetProperty("BuAcknowledged", out var acknowledged)
+                            && acknowledged.ValueKind == JsonValueKind.True;
                     }
-                    catch
+                    catch (JsonException)
                     {
-                        deviceConfiguration = new { Raw = string.Join('\n', jsonLines) };
+                        valid = false;
                     }
                 }
+
+                deviceConfiguration = new { Valid = valid };
             }
 
             if ((id.IndexOf("TcpDps443", StringComparison.OrdinalIgnoreCase) >= 0) || id.StartsWith("2.1"))
@@ -231,87 +213,6 @@ public class DiagnosticTranscriptService
                 }
             }
 
-            // TCP connections owned by gateway process: collect lines under GatewayTcpConnections section (6.2)
-            // Trusted root CAs (3.1)
-            if ((id.IndexOf("TrustedRootCAs", StringComparison.OrdinalIgnoreCase) >= 0) || idPrefix == "3.1")
-            {
-                foreach (var ln in cleaned)
-                {
-                    var t = ln.Trim();
-                    if (t.Length == 0 || Regex.IsMatch(t, "^={3,}$"))
-                        continue;
-
-                    var cert = ParseCertificateLine(t);
-                    if (cert is null)
-                        continue;
-
-                    if (cert.Thumbprint is null || seenTrustedRootThumbprints.Add(cert.Thumbprint))
-                        trustedRootCAs.Add(cert);
-                }
-                continue;
-            }
-
-            // Intermediate CAs in the local machine store (3.2)
-            if ((id.IndexOf("IntermediateCACheck", StringComparison.OrdinalIgnoreCase) >= 0) || idPrefix == "3.2")
-            {
-                foreach (var ln in cleaned)
-                {
-                    var t = ln.Trim();
-                    if (t.Length == 0 || Regex.IsMatch(t, "^={3,}$"))
-                        continue;
-
-                    var cert = ParseCertificateLine(t);
-                    if (cert is null)
-                        continue;
-
-                    if (cert.Thumbprint is null || seenIntermediateThumbprints.Add(cert.Thumbprint))
-                        intermediateCAs.Add(cert);
-                }
-                continue;
-            }
-
-            // Server certificate presented by DPS (3.3)
-            if ((id.IndexOf("ServerCertInspect", StringComparison.OrdinalIgnoreCase) >= 0) || idPrefix == "3.3")
-            {
-                var fields = new Dictionary<string, string>(StringComparer.OrdinalIgnoreCase);
-                var notes = new List<string>();
-
-                foreach (var ln in cleaned)
-                {
-                    var t = ln.Trim();
-                    if (t.Length == 0 || Regex.IsMatch(t, "^={3,}$"))
-                        continue;
-
-                    var fm = ServerCertFieldRegex.Match(t);
-                    if (fm.Success)
-                        fields[fm.Groups["k"].Value] = fm.Groups["v"].Value.Trim();
-                    else
-                        notes.Add(t);
-                }
-
-                if (fields.Count > 0 || notes.Count > 0)
-                {
-                    fields.TryGetValue("Subject", out var subject);
-                    fields.TryGetValue("Issuer", out var issuer);
-                    fields.TryGetValue("NotBefore", out var notBefore);
-                    fields.TryGetValue("NotAfter", out var notAfter);
-                    fields.TryGetValue("Thumbprint", out var thumbprint);
-
-                    serverCertificate = new
-                    {
-                        Subject = subject,
-                        CommonName = ExtractCommonName(subject),
-                        Issuer = issuer,
-                        IssuerCommonName = ExtractCommonName(issuer),
-                        NotBefore = notBefore,
-                        NotAfter = notAfter,
-                        Thumbprint = thumbprint,
-                        Notes = notes
-                    };
-                }
-                continue;
-            }
-
             // Gateway client certificate entry (4.1)
             if ((id.IndexOf("GatewayClientCert", StringComparison.OrdinalIgnoreCase) >= 0) || id.StartsWith("4.1"))
             {
@@ -325,6 +226,11 @@ public class DiagnosticTranscriptService
                         continue;
 
                     var cnM = Regex.Match(t, "CN=(?<cn>[^\\s,]+)", RegexOptions.IgnoreCase);
+
+                    // Section 4.1 also carries status text; only real certificate lines are reported.
+                    if (!cnM.Success)
+                        continue;
+
                     var hpM = Regex.Match(t, "HasPrivateKey=(?<hp>\\S+)", RegexOptions.IgnoreCase);
                     var naM = Regex.Match(t, "NotAfter=(?<na>[^\n]+?)\\s", RegexOptions.IgnoreCase);
                     var thumbM = Regex.Match(t, "([A-Fa-f0-9]{16,})$");
@@ -332,7 +238,7 @@ public class DiagnosticTranscriptService
                     var certObj = new
                     {
                         Line = t,
-                        CN = cnM.Success ? cnM.Groups["cn"].Value : null,
+                        CN = cnM.Groups["cn"].Value,
                         HasPrivateKey = hpM.Success ? hpM.Groups["hp"].Value : null,
                         NotAfter = naM.Success ? naM.Groups["na"].Value.Trim() : null,
                         Thumbprint = thumbM.Success ? thumbM.Groups[1].Value : null
@@ -340,7 +246,7 @@ public class DiagnosticTranscriptService
 
                     if (isExactDeviceQuery)
                     {
-                        var cn = cnM.Success ? cnM.Groups["cn"].Value : null;
+                        var cn = cnM.Groups["cn"].Value;
                         if (string.Equals(cn, sourceLabel, StringComparison.OrdinalIgnoreCase) || t.IndexOf(sourceLabel, StringComparison.OrdinalIgnoreCase) >= 0)
                             gatewayClientCerts.Add(certObj);
                     }
@@ -355,17 +261,18 @@ public class DiagnosticTranscriptService
 
         return new
         {
-            Source = sourceLabel,
             DeviceConfiguration = deviceConfiguration,
             DpsTcp = dpsTcp,
-            TrustedRootCAs = trustedRootCAs,
-            IntermediateCAs = intermediateCAs,
-            ServerCertificate = serverCertificate,
             GatewayClientCertificates = gatewayClientCerts,
             WinHttpProxyService = winHttpProxyService,
             WinHttpAutoProxyService = winHttpAutoProxyService
         };
     }
+
+    private static bool HasText(JsonElement element, string propertyName) =>
+        element.TryGetProperty(propertyName, out var value)
+        && value.ValueKind == JsonValueKind.String
+        && !string.IsNullOrWhiteSpace(value.GetString());
 
     private string NormalizeMessage(string line)
     {
@@ -373,40 +280,4 @@ public class DiagnosticTranscriptService
         t = Regex.Replace(t, @"\s+", " ").Trim();
         return t;
     }
-
-    private static TranscriptCertificate? ParseCertificateLine(string line)
-    {
-        var m = CertificateLineRegex.Match(line);
-        if (!m.Success)
-            return null;
-
-        var subject = m.Groups["subject"].Value.Trim();
-
-        return new TranscriptCertificate
-        {
-            Line = line,
-            Subject = subject,
-            CommonName = ExtractCommonName(subject),
-            NotAfter = m.Groups["notAfter"].Value.Trim(),
-            Thumbprint = m.Groups["thumbprint"].Value.Trim()
-        };
-    }
-
-    private static string? ExtractCommonName(string? distinguishedName)
-    {
-        if (string.IsNullOrWhiteSpace(distinguishedName))
-            return null;
-
-        var m = Regex.Match(distinguishedName, "CN=(?<cn>[^,]+)", RegexOptions.IgnoreCase);
-        return m.Success ? m.Groups["cn"].Value.Trim() : null;
-    }
-}
-
-public record TranscriptCertificate
-{
-    public string Line { get; init; } = string.Empty;
-    public string? Subject { get; init; }
-    public string? CommonName { get; init; }
-    public string? NotAfter { get; init; }
-    public string? Thumbprint { get; init; }
 }
