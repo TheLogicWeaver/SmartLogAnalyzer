@@ -1,18 +1,37 @@
-using Microsoft.EntityFrameworkCore;
-using System.IO;
+using Azure.Storage.Blobs;
+using Microsoft.Extensions.Options;
 using SmartLogAnalyzer.Models;
+using SmartLogAnalyzer.Storage;
 
 var builder = WebApplication.CreateBuilder(args);
 builder.Services.AddEndpointsApiExplorer();
 builder.Services.AddSwaggerGen();
-builder.Services.AddDbContext<AppDbContext>(options =>
-    options.UseSqlite($"Data Source={Path.Combine(builder.Environment.ContentRootPath, "logs.db")}"));
-builder.Services.AddScoped<LogParserFactory>();
-builder.Services.AddScoped<LogProcessingService>();
-builder.Services.AddScoped<LogIngestionService>();
+builder.Services.AddMemoryCache();
+
+builder.Services.AddOptions<LogStorageOptions>()
+    .Bind(builder.Configuration.GetSection(LogStorageOptions.SectionName))
+    .Validate(options => options.IsConfigured, "LogStorage:ServiceUri and LogStorage:Container must be configured.")
+    .ValidateOnStart();
+
+builder.Services.AddSingleton(serviceProvider =>
+{
+    var options = serviceProvider.GetRequiredService<IOptions<LogStorageOptions>>().Value;
+    var sasToken = options.SasToken.TrimStart('?');
+
+    var uri = string.IsNullOrWhiteSpace(sasToken)
+        ? new Uri($"{options.ServiceUri.TrimEnd('/')}/{options.Container}")
+        : new Uri($"{options.ServiceUri.TrimEnd('/')}/{options.Container}?{sasToken}");
+
+    return new BlobContainerClient(uri);
+});
+
+builder.Services.AddSingleton<BlobLogCatalog>();
+builder.Services.AddSingleton<ILogStore, BlobLogStore>();
+builder.Services.AddHostedService<LogCacheWarmupService>();
+
+builder.Services.AddSingleton<MessageNormalizer>();
 builder.Services.AddScoped<LogInsightsService>();
 builder.Services.AddScoped<DiagnosticTranscriptService>();
-builder.Services.AddSingleton<MessageNormalizer>();
 builder.Services.AddScoped<IAnomalyDetector, SpikeAnomalyDetector>();
 builder.Services.AddScoped<AnomalyInterpreter>();
 builder.Services.AddScoped<LogAnomalyAnalysisService>();
@@ -20,77 +39,63 @@ builder.Services.AddScoped<ConnectionAnalysisService>();
 
 var app = builder.Build();
 
-using (var scope = app.Services.CreateScope())
-{
-    scope.ServiceProvider.GetRequiredService<AppDbContext>().Database.Migrate();
-}
-
 app.UseSwagger();
 app.UseSwaggerUI();
-app.MapPost("/upload-log", async (IFormFile file, HttpRequest req, LogIngestionService ingestionService) =>
+
+app.MapGet("/api/devices", async (ILogStore store, CancellationToken cancellationToken) =>
 {
-    if (file == null || file.Length == 0)
-        return Results.BadRequest("No file uploaded");
-
-    var source = req.Form["source"].FirstOrDefault();
-
-    using var stream = file.OpenReadStream();
-
-    var count = await ingestionService.ProcessFileAsync(stream, source);
-
-    return Results.Ok(new { Inserted = count });
-})
-.DisableAntiforgery();
+    return await store.GetDeviceIdsAsync(cancellationToken);
+});
 
 app.MapGet("/api/insights/summary",
-    async (LogInsightsService service) =>
+    async (
+        [AsParameters] LogQueryFilter filter,
+        LogInsightsService service,
+        CancellationToken cancellationToken) =>
 {
-    return await service.GetSummaryAsync();
-})
-.DisableAntiforgery();
+    return await service.GetSummaryAsync(filter, cancellationToken);
+});
 
 app.MapGet("/api/insights/top-messages",
     async (
         [AsParameters] LogQueryFilter filter,
-        LogInsightsService service) =>
+        LogInsightsService service,
+        CancellationToken cancellationToken) =>
 {
-    return await service.GetTopMessagesAsync(filter);
-})
-.DisableAntiforgery();
+    return await service.GetTopMessagesAsync(filter, cancellationToken);
+});
 
 app.MapGet("/api/insights/logs",
     async (
         [AsParameters] LogQueryFilter filter,
-        LogInsightsService service) =>
+        LogInsightsService service,
+        CancellationToken cancellationToken) =>
 {
-    return await service.GetLogsAsync(filter);
-})
-.DisableAntiforgery();
+    return await service.GetLogsAsync(filter, cancellationToken);
+});
 
 app.MapGet("/api/insights/smart-groups",
     async (
         [AsParameters] LogQueryFilter filter,
-        LogInsightsService service) =>
+        LogInsightsService service,
+        CancellationToken cancellationToken) =>
 {
-    return await service.GetSmartGroupsAsync(filter);
-})
-.DisableAntiforgery();
+    return await service.GetSmartGroupsAsync(filter, cancellationToken);
+});
 
 app.MapGet("/insights/anomalies", async (
     string level,
     LogAnomalyAnalysisService service) =>
 {
     return await service.AnalyzeAsync(level);
-})
-.DisableAntiforgery();
+});
 
 app.MapGet("/api/insights/connection-incidents", async (
     [AsParameters] ConnectionIncidentFilter filter,
     ConnectionAnalysisService service) =>
 {
     return await service.GetIncidentSummariesAsync(filter);
-})
-.DisableAntiforgery();
+});
 
 app.MapGet("/api/insights/connection-incidents/{incidentKey}/evidence", async (
     string incidentKey,
@@ -98,25 +103,26 @@ app.MapGet("/api/insights/connection-incidents/{incidentKey}/evidence", async (
 {
     var incident = await service.GetIncidentEvidenceAsync(incidentKey);
     return incident is null ? Results.NotFound() : Results.Ok(incident);
-})
-.DisableAntiforgery();
+});
 
 app.MapGet("/api/insights/heartbeats", async (
     [AsParameters] HeartbeatFilter filter,
     ConnectionAnalysisService service) =>
 {
     return await service.GetHeartbeatsAsync(filter);
-})
-.DisableAntiforgery();
+});
 
-app.MapGet("/api/diagnostics/transcript-summary", async (string? deviceId, DiagnosticTranscriptService service) =>
+app.MapGet("/api/diagnostics/transcript-summary", async (
+    string? deviceId,
+    DiagnosticTranscriptService service,
+    CancellationToken cancellationToken) =>
 {
     if (string.IsNullOrWhiteSpace(deviceId))
         return Results.BadRequest("Missing required 'deviceId' query parameter.");
 
-    var summary = await service.AnalyzeAsync(deviceId);
+    var summary = await service.AnalyzeAsync(deviceId, cancellationToken);
 
     return summary == null ? Results.NotFound() : Results.Ok(summary);
-})
-.DisableAntiforgery();
+});
+
 app.Run();

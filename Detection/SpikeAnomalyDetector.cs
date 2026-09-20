@@ -1,15 +1,15 @@
-using Microsoft.EntityFrameworkCore;
+using SmartLogAnalyzer.Storage;
 
 public class SpikeAnomalyDetector : IAnomalyDetector
 {
-    private readonly AppDbContext _db;
+    private readonly ILogStore _store;
     private readonly MessageNormalizer _normalizer;
 
     public SpikeAnomalyDetector(
-        AppDbContext db,
+        ILogStore store,
         MessageNormalizer normalizer)
     {
-        _db = db;
+        _store = store;
         _normalizer = normalizer;
     }
 
@@ -26,13 +26,11 @@ public class SpikeAnomalyDetector : IAnomalyDetector
         var historicalWindowStart =
             now.AddHours(-lookbackHours);
 
-        var logs = await _db.Logs
-            .Where(x =>
-                x.Level == level &&
-                x.Timestamp >= historicalWindowStart)
-            .ToListAsync();
+        var logs = await _store.GetGatewayLogsAsync(
+            new LogScope(StartTime: historicalWindowStart));
 
         var normalizedLogs = logs
+            .Where(x => string.Equals(x.Level, level, StringComparison.OrdinalIgnoreCase))
             .Select(x => new
             {
                 Pattern = _normalizer.Normalize(x.Message),

@@ -1,3 +1,5 @@
+using SmartLogAnalyzer.Storage;
+
 namespace SmartLogAnalyzer.Models
 {
     public class LogQueryFilter
@@ -10,35 +12,39 @@ namespace SmartLogAnalyzer.Models
 
         public DateTime? EndTime { get; set; }
 
-        public int Top { get; set; } = 10;
+        // Nullable so [AsParameters] treats these as optional rather than required query values.
+        public int? Top { get; set; }
 
-        public int Limit { get; set; } = 100;
+        public int? Limit { get; set; }
 
-        public IQueryable<LogEntryEntity> ApplyTo(IQueryable<LogEntryEntity> query)
+        public int ResolvedTop => Top is > 0 ? Top.Value : 10;
+
+        public int ResolvedLimit => Limit is > 0 ? Limit.Value : 100;
+
+        public LogScope ToScope() => new(DeviceId, StartTime, EndTime);
+
+        public IEnumerable<LogRecord> ApplyTo(IEnumerable<LogRecord> logs)
         {
-            query = ApplyNonDeviceFilters(query);
+            logs = ApplyNonDeviceFilters(logs);
 
             if (!string.IsNullOrWhiteSpace(DeviceId))
-                query = query.Where(log => log.DeviceId == DeviceId || log.DeviceId.Contains(DeviceId));
+                logs = logs.Where(log => log.EffectiveDeviceId.Contains(DeviceId, StringComparison.OrdinalIgnoreCase));
 
-            return query;
+            return logs;
         }
 
-        public IQueryable<LogEntryEntity> ApplyNonDeviceFilters(IQueryable<LogEntryEntity> query)
+        public IEnumerable<LogRecord> ApplyNonDeviceFilters(IEnumerable<LogRecord> logs)
         {
             if (!string.IsNullOrWhiteSpace(Level))
-            {
-                query = query.Where(log =>
-                    log.Level.ToLower() == Level.ToLower());
-            }
+                logs = logs.Where(log => string.Equals(log.Level, Level, StringComparison.OrdinalIgnoreCase));
 
             if (StartTime.HasValue)
-                query = query.Where(log => log.Timestamp >= StartTime.Value);
+                logs = logs.Where(log => log.Timestamp >= StartTime.Value);
 
             if (EndTime.HasValue)
-                query = query.Where(log => log.Timestamp <= EndTime.Value);
+                logs = logs.Where(log => log.Timestamp <= EndTime.Value);
 
-            return query;
+            return logs;
         }
     }
 }

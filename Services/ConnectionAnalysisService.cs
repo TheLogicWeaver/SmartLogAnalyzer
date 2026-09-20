@@ -1,17 +1,17 @@
-using Microsoft.EntityFrameworkCore;
 using SmartLogAnalyzer.Models;
+using SmartLogAnalyzer.Storage;
 
 public class ConnectionAnalysisService
 {
     private const int ContextLineCount = 40;
     private const int MaxIncidentCount = 500;
-    private const string UnprovisionedDeviceId = "DeviceNotProvisioned";
-    private readonly AppDbContext _db;
+    private const string UnprovisionedDeviceId = LogRecord.UnprovisionedDeviceId;
+    private readonly ILogStore _store;
     private readonly MessageNormalizer _normalizer;
 
-    public ConnectionAnalysisService(AppDbContext db, MessageNormalizer normalizer)
+    public ConnectionAnalysisService(ILogStore store, MessageNormalizer normalizer)
     {
-        _db = db;
+        _store = store;
         _normalizer = normalizer;
     }
 
@@ -22,7 +22,7 @@ public class ConnectionAnalysisService
 
         foreach (var (deviceId, deviceLogs) in BuildDeviceTimelines(logs, filter.DeviceId))
         {
-            var orderedLogs = deviceLogs.OrderBy(log => log.Timestamp).ThenBy(log => log.Id).ToList();
+            var orderedLogs = OrderChronologically(deviceLogs).ToList();
             var heartbeatExecutions = BuildHeartbeatExecutions(orderedLogs, deviceId);
             ConnectionIncident? activeIncident = null;
 
@@ -88,7 +88,7 @@ public class ConnectionAnalysisService
 
         return incidents
             .OrderByDescending(incident => incident.DisconnectedAt)
-            .Take(Math.Clamp(filter.Limit, 1, MaxIncidentCount))
+            .Take(Math.Clamp(filter.ResolvedLimit, 1, MaxIncidentCount))
             .ToList();
     }
 
@@ -118,9 +118,9 @@ public class ConnectionAnalysisService
     {
         var logs = await GetHeartbeatLogsAsync(filter);
 
-        var heartbeats = logs.GroupBy(log => log.DeviceId)
+        var heartbeats = logs.GroupBy(log => log.EffectiveDeviceId, StringComparer.OrdinalIgnoreCase)
             .SelectMany(deviceLogs => BuildHeartbeatExecutions(
-                deviceLogs.OrderBy(log => log.Timestamp).ThenBy(log => log.Id).ToList(),
+                OrderChronologically(deviceLogs).ToList(),
                 deviceLogs.Key))
             .OrderByDescending(heartbeat => heartbeat.StartedAt);
 
@@ -130,117 +130,55 @@ public class ConnectionAnalysisService
         : heartbeats;
 
         return filteredHeartbeats
-            .Take(Math.Clamp(filter.Limit, 1, 500))
+            .Take(Math.Clamp(filter.ResolvedLimit, 1, 500))
             .ToList();
     }
 
-    private async Task<List<LogEntryEntity>> GetFilteredLogsAsync(
-        LogQueryFilter filter,
-        bool includeUnprovisionedContext)
-    {
-        var query = filter.ApplyTo(_db.Logs.AsNoTracking());
-
-        if (includeUnprovisionedContext && !string.IsNullOrWhiteSpace(filter.DeviceId))
-        {
-            query = filter.ApplyNonDeviceFilters(_db.Logs.AsNoTracking())
-                .Where(log =>
-                    log.DeviceId.Contains(filter.DeviceId) ||
-                    log.DeviceId == UnprovisionedDeviceId);
-        }
-
-        return await query.ToListAsync();
-    }
-
-    private async Task<List<LogEntryEntity>> GetIncidentLogsAsync(
+    private async Task<List<LogRecord>> GetIncidentLogsAsync(
         ConnectionIncidentFilter filter)
     {
-        var query = _db.Logs.AsNoTracking();
-
-        if (!string.IsNullOrWhiteSpace(filter.DeviceId))
-        {
-            query = query.Where(log =>
-                log.DeviceId.Contains(filter.DeviceId) ||
-                log.DeviceId == UnprovisionedDeviceId);
-        }
-
-        return await query.ToListAsync();
+        // The store already prunes to the matching device folders, and the folder name is what
+        // identifies the device, so no further device filtering is needed here.
+        var logs = await _store.GetGatewayLogsAsync(new LogScope(filter.DeviceId));
+        return logs.ToList();
     }
 
-    private async Task<List<LogEntryEntity>> GetHeartbeatLogsAsync(
+    private async Task<List<LogRecord>> GetHeartbeatLogsAsync(
         HeartbeatFilter filter)
     {
-        var query = _db.Logs.AsNoTracking();
+        var logs = await _store.GetGatewayLogsAsync(new LogScope(filter.DeviceId));
+        return logs.ToList();
+    }
 
-        if (!string.IsNullOrWhiteSpace(filter.DeviceId))
-        {
-            query = query.Where(log =>
-                log.DeviceId.Contains(filter.DeviceId));
-        }
-
-        return await query.ToListAsync();
-    }    
-
-    private static List<(string DeviceId, List<LogEntryEntity> Logs)> BuildDeviceTimelines(
-        List<LogEntryEntity> logs,
+    private static List<(string DeviceId, List<LogRecord> Logs)> BuildDeviceTimelines(
+        List<LogRecord> logs,
         string? requestedDeviceId)
     {
-        if (string.IsNullOrWhiteSpace(requestedDeviceId))
+        // The upload folder names the device even while its log lines still say
+        // DeviceNotProvisioned, so grouping on the effective id keeps those lines in the timeline.
+        var timelines = logs
+            .GroupBy(log => log.EffectiveDeviceId, StringComparer.OrdinalIgnoreCase)
+            .Where(group => !IsUnprovisionedId(group.Key));
+
+        if (!string.IsNullOrWhiteSpace(requestedDeviceId))
         {
-            return logs
-                .Where(log => !IsUnprovisioned(log))
-                .GroupBy(log => log.DeviceId)
-                .Select(group => (group.Key, group.ToList()))
-                .ToList();
-        }
-
-        var deviceIds = logs
-            .Where(log => !IsUnprovisioned(log))
-            .Select(log => log.DeviceId)
-            .Where(deviceId => deviceId.Contains(requestedDeviceId, StringComparison.OrdinalIgnoreCase))
-            .Distinct(StringComparer.OrdinalIgnoreCase)
-            .ToList();
-
-        var timelines = deviceIds.ToDictionary(
-            deviceId => deviceId,
-            _ => new List<LogEntryEntity>(),
-            StringComparer.OrdinalIgnoreCase);
-
-        string? activeDeviceId = null;
-
-        foreach (var log in logs.OrderBy(log => log.Timestamp).ThenBy(log => log.Id))
-        {
-            var referencedDeviceId = deviceIds.FirstOrDefault(deviceId =>
-                ReferencesDevice(log, deviceId));
-
-            if (referencedDeviceId is not null)
-            {
-                activeDeviceId = referencedDeviceId;
-            }
-
-            if (IsUnprovisioned(log))
-            {
-                if (activeDeviceId is not null)
-                    timelines[activeDeviceId].Add(log);
-
-                continue;
-            }
-
-            if (referencedDeviceId is not null)
-                timelines[referencedDeviceId].Add(log);
+            timelines = timelines.Where(group =>
+                group.Key.Contains(requestedDeviceId, StringComparison.OrdinalIgnoreCase));
         }
 
         return timelines
-            .Where(timeline => timeline.Value.Count > 0)
-            .Select(timeline => (timeline.Key, timeline.Value))
+            .Select(group => (group.Key, group.ToList()))
             .ToList();
     }
 
-    private static bool ReferencesDevice(LogEntryEntity log, string deviceId) =>
-        log.DeviceId.Contains(deviceId, StringComparison.OrdinalIgnoreCase) ||
-        log.Message.Contains(deviceId, StringComparison.OrdinalIgnoreCase);
+    private static IOrderedEnumerable<LogRecord> OrderChronologically(IEnumerable<LogRecord> logs) =>
+        logs
+            .OrderBy(log => log.Timestamp)
+            .ThenBy(log => log.FilePath, StringComparer.Ordinal)
+            .ThenBy(log => log.Id);
 
-    private static bool IsUnprovisioned(LogEntryEntity log) =>
-        string.Equals(log.DeviceId, UnprovisionedDeviceId, StringComparison.OrdinalIgnoreCase);
+    private static bool IsUnprovisionedId(string deviceId) =>
+        string.Equals(deviceId, UnprovisionedDeviceId, StringComparison.OrdinalIgnoreCase);
 
     private static void Complete(ConnectionIncident incident)
     {
@@ -250,11 +188,11 @@ public class ConnectionAnalysisService
         incident.IsProlongedOver24Hours = incident.DurationHours >= 24;
     }
 
-    private static bool IsError(LogEntryEntity log) =>
+    private static bool IsError(LogRecord log) =>
         string.Equals(log.Level, "Error", StringComparison.OrdinalIgnoreCase);
 
     private static List<HeartbeatExecution> BuildHeartbeatExecutions(
-        List<LogEntryEntity> logs,
+        List<LogRecord> logs,
         string deviceId)
     {
         var heartbeats = new List<HeartbeatExecution>();
@@ -301,26 +239,26 @@ public class ConnectionAnalysisService
         return heartbeats;
     }
 
-    private static bool IsHeartbeatStarted(LogEntryEntity log) =>
+    private static bool IsHeartbeatStarted(LogRecord log) =>
         log.EventId == 901 ||
         log.Message.Contains("heartbeat job started", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsHeartbeatCompleted(LogEntryEntity log) =>
+    private static bool IsHeartbeatCompleted(LogRecord log) =>
         log.EventId == 903 ||
         log.Message.Contains("heartbeat job completed", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsCloudDisconnection(LogEntryEntity log) =>
+    private static bool IsCloudDisconnection(LogRecord log) =>
         log.Message.Contains("not connected to cloud", StringComparison.OrdinalIgnoreCase) ||
         log.Message.Contains("current status: disconnected", StringComparison.OrdinalIgnoreCase) ||
         log.Message.Contains("device went into disconnected state", StringComparison.OrdinalIgnoreCase) ||
         log.Message.Contains("connection lost", StringComparison.OrdinalIgnoreCase);
 
-    private static bool IsCloudReconnection(LogEntryEntity log) =>
+    private static bool IsCloudReconnection(LogRecord log) =>
         log.Message.Contains("current status: connected", StringComparison.OrdinalIgnoreCase) ||
         log.Message.Contains("is sent to iot hub successfully", StringComparison.OrdinalIgnoreCase) ||
         log.Message.Contains("data message send to iot hub successfully", StringComparison.OrdinalIgnoreCase);
 
-    private static ConnectionLogContext ToContext(LogEntryEntity log) => new()
+    private static ConnectionLogContext ToContext(LogRecord log) => new()
     {
         Id = log.Id,
         Timestamp = log.Timestamp,

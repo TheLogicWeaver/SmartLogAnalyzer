@@ -1,5 +1,9 @@
 @SmartLogAnalyzer_HostAddress = http://localhost:5173
 
+GET {{SmartLogAnalyzer_HostAddress}}/api/devices
+Accept: application/json
+
+###
 GET {{SmartLogAnalyzer_HostAddress}}/api/insights/connection-incidents
 Accept: application/json
 

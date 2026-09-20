@@ -1,57 +1,44 @@
 using System.Text.RegularExpressions;
-using Microsoft.EntityFrameworkCore;
 using System.Text.Json;
 using SmartLogAnalyzer.Models;
+using SmartLogAnalyzer.Storage;
 
 public class DiagnosticTranscriptService
 {
     private static readonly Regex SectionRegex = new Regex(@"^\s*(?<sec>(?:\d+\.\d+|[A-Z]\.\d+))\b", RegexOptions.Compiled);
 
-    private readonly AppDbContext _db;
+    private readonly ILogStore _store;
 
-    public DiagnosticTranscriptService(AppDbContext db)
+    public DiagnosticTranscriptService(ILogStore store)
     {
-        _db = db;
+        _store = store;
     }
 
-    public Task<object?> AnalyzeAsync(string deviceId)
+    public async Task<object?> AnalyzeAsync(string deviceId, CancellationToken cancellationToken = default)
     {
         if (string.IsNullOrWhiteSpace(deviceId))
-            return Task.FromResult<object?>(null);
+            return null;
 
         var d = deviceId.Trim();
 
-        // Find rows that reference the device either in DeviceId or RawLine
-        var matches = _db.Logs
-            .Where(x => EF.Functions.Like(x.DeviceId, $"%{d}%") || EF.Functions.Like(x.RawLine, $"%{d}%"))
-            .OrderBy(x => x.Id)
-            .ToList();
+        var transcripts = await _store.GetTranscriptsAsync(d, cancellationToken);
 
-        if (!matches.Any())
-            return Task.FromResult<object?>(null);
+        if (transcripts.Count == 0)
+            return null;
 
-        var minId = matches.First().Id;
-        var maxId = matches.Last().Id;
+        // A transcript file is already the analysis window, so the newest upload is used as-is.
+        var latest = transcripts
+            .OrderByDescending(transcript => transcript.LogDate)
+            .ThenByDescending(transcript => transcript.Path, StringComparer.Ordinal)
+            .First();
 
-        // Expand window to capture surrounding section headers and blocks
-        var windowBefore = 500;
-        var windowAfter = 500;
+        if (latest.Lines.Count == 0)
+            return null;
 
-        var startId = Math.Max(0, minId - windowBefore);
-        var endId = maxId + windowAfter;
+        var isExact = transcripts.Any(transcript =>
+            transcript.DeviceId.Trim().Equals(d, StringComparison.OrdinalIgnoreCase));
 
-        var block = _db.Logs
-            .Where(x => x.Id >= startId && x.Id <= endId)
-            .OrderBy(x => x.Id)
-            .Select(x => x.RawLine)
-            .ToList();
-
-        if (!block.Any())
-            return Task.FromResult<object?>(null);
-
-        var isExact = matches.Any(x => !string.IsNullOrWhiteSpace(x.DeviceId) && string.Equals(x.DeviceId.Trim(), d, StringComparison.OrdinalIgnoreCase));
-        var result = AnalyzeLines(block, d, isExact);
-        return Task.FromResult<object?>(result);
+        return AnalyzeLines(latest.Lines.ToList(), d, isExact);
     }
 
     private object AnalyzeLines(List<string> includedLines, string sourceLabel, bool isExactDeviceQuery)
