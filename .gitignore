@@ -1,9 +1,14 @@
 # Binaries and build outputs
 bin/
 obj/
+publish/
 *.dll
 *.exe
 *.pdb
+*.zip
+
+# Azure Functions local configuration (contains secrets)
+local.settings.json
 
 # Database files
 logs.db

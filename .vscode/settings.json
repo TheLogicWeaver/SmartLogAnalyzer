@@ -1,5 +1,9 @@
 {
-    "chat.tools.terminal.autoApprove": {
-        "dotnet build": true
-    }
+    "azureFunctions.deploySubpath": "SmartLogAnalyzer.Functions/bin/Release/net10.0/publish",
+    "azureFunctions.projectLanguage": "C#",
+    "azureFunctions.projectRuntime": "~4",
+    "debug.internalConsoleOptions": "neverOpen",
+    "azureFunctions.preDeployTask": "publish (functions)",
+    "appService.defaultWebAppToDeploy": "/subscriptions/296f974e-8cc0-46db-889e-8ad0d682b15a/resourceGroups/danaher-ai-hackathon/providers/Microsoft.Web/sites/log-summarizer",
+    "appService.deploySubpath": "SmartLogAnalyzer\\publish"
 }
