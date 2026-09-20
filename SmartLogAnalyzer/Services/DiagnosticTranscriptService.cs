@@ -75,6 +75,9 @@ public class DiagnosticTranscriptService
         // Structured extraction for known sections
         object? deviceConfiguration = null;
         object? dpsTcp = null;
+        object? apimTcp = null;
+        object? iotHubGlobalTcp = null;
+        object? iotHubTcp = null;
         var gatewayClientCerts = new List<object>();
 
         object? winHttpProxyService = null;
@@ -145,27 +148,24 @@ public class DiagnosticTranscriptService
                 deviceConfiguration = new { Valid = valid };
             }
 
-            if ((id.IndexOf("TcpDps443", StringComparison.OrdinalIgnoreCase) >= 0) || id.StartsWith("2.1"))
+            // Three probes share the 2.1 prefix, so each is matched by name; the prefix is only a
+            // fallback for older transcripts that carried DPS alone.
+            if (id.IndexOf("TcpApim443", StringComparison.OrdinalIgnoreCase) >= 0)
             {
-                var resolved = cleaned.FirstOrDefault(l => l.IndexOf("Resolved", StringComparison.OrdinalIgnoreCase) >= 0);
-                var tcpTest = cleaned.FirstOrDefault(x => x.IndexOf("TcpTestSucceeded", StringComparison.OrdinalIgnoreCase) >= 0);
-                var pingTest = cleaned.FirstOrDefault(x => x.IndexOf("PingSucceeded", StringComparison.OrdinalIgnoreCase) >= 0);
+                apimTcp = ParseTcpCheck(cleaned);
+            }
+            else if (id.IndexOf("TcpIotHub443", StringComparison.OrdinalIgnoreCase) >= 0)
+            {
+                iotHubGlobalTcp = ParseTcpCheck(cleaned);
+            }
+            else if ((id.IndexOf("TcpDps443", StringComparison.OrdinalIgnoreCase) >= 0) || idPrefix == "2.1")
+            {
+                dpsTcp = ParseTcpCheck(cleaned);
+            }
 
-                int? latencyMs = null;
-                if (tcpTest != null)
-                {
-                    var m = Regex.Match(tcpTest, @"(\d+) ms");
-                    if (m.Success && int.TryParse(m.Groups[1].Value, out var ms))
-                        latencyMs = ms;
-                }
-
-                dpsTcp = new
-                {
-                    Resolved = resolved,
-                    TcpTestSucceeded = tcpTest != null && tcpTest.IndexOf("True", StringComparison.OrdinalIgnoreCase) >= 0,
-                    PingSucceeded = pingTest != null && pingTest.IndexOf("True", StringComparison.OrdinalIgnoreCase) >= 0,
-                    LatencyMs = latencyMs
-                };
+            if ((id.IndexOf("IotHubReachability", StringComparison.OrdinalIgnoreCase) >= 0) || idPrefix == "2.4")
+            {
+                iotHubTcp = ParseTcpCheck(cleaned);
             }
 
             // WinHTTP proxy blocks: parse key: value pairs inside section (A.3 / A.5)
@@ -250,9 +250,36 @@ public class DiagnosticTranscriptService
         {
             DeviceConfiguration = deviceConfiguration,
             DpsTcp = dpsTcp,
+            ApimTcp = apimTcp,
+            IotHubGlobalTcp = iotHubGlobalTcp,
+            IotHubTcp = iotHubTcp,
             GatewayClientCertificates = gatewayClientCerts,
             WinHttpProxyService = winHttpProxyService,
             WinHttpAutoProxyService = winHttpAutoProxyService
+        };
+    }
+
+    /// <summary>Shared shape for the Test-NetConnection style reachability probes (2.1 / 2.4).</summary>
+    private static object ParseTcpCheck(List<string> cleaned)
+    {
+        var resolved = cleaned.FirstOrDefault(l => l.IndexOf("Resolved", StringComparison.OrdinalIgnoreCase) >= 0);
+        var tcpTest = cleaned.FirstOrDefault(x => x.IndexOf("TcpTestSucceeded", StringComparison.OrdinalIgnoreCase) >= 0);
+        var pingTest = cleaned.FirstOrDefault(x => x.IndexOf("PingSucceeded", StringComparison.OrdinalIgnoreCase) >= 0);
+
+        int? latencyMs = null;
+        if (tcpTest != null)
+        {
+            var m = Regex.Match(tcpTest, @"(\d+) ms");
+            if (m.Success && int.TryParse(m.Groups[1].Value, out var ms))
+                latencyMs = ms;
+        }
+
+        return new
+        {
+            Resolved = resolved,
+            TcpTestSucceeded = tcpTest != null && tcpTest.IndexOf("True", StringComparison.OrdinalIgnoreCase) >= 0,
+            PingSucceeded = pingTest != null && pingTest.IndexOf("True", StringComparison.OrdinalIgnoreCase) >= 0,
+            LatencyMs = latencyMs
         };
     }
 
